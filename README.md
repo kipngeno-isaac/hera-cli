@@ -68,11 +68,24 @@ that edits files or runs a command (`[y]es / [a]lways / [n]o`). Read-only tools 
 |---|---|
 | `/tokens` | Show token usage this session |
 | `/tools` | List the tools Hera can use |
+| `/allow` | List `run_bash` allow patterns (or `/allow <pattern>` to add one) |
+| `/sandbox` | Show the `run_bash` sandbox status |
 | `/reasoning` | Toggle streaming of the model's thinking |
 | `/cwd` | Show the working directory |
 | `/clear` | Erase conversation and session approvals |
 | `/help` | Show command list |
 | `/exit` | Quit (Ctrl-C / Ctrl-D also work) |
+
+## Sandboxing & permissions
+
+`run_bash` runs in a sandbox by default (`HERA_SANDBOX=auto`): **bubblewrap** if installed
+(filesystem confined to the working dir, network off — best), else **`unshare`** on Linux
+(PID-isolated, network off), else **none**. Set `HERA_SANDBOX_NET=1` to allow network (for
+`pip install`, `git pull`, …), or `HERA_SANDBOX=none` to disable. Check with `/sandbox`.
+
+Pre-approve safe commands so they don't prompt: `HERA_ALLOW="git status,git diff*,pytest*"`,
+a `.heraallow` file (one pattern per line), `/allow <pattern>`, or **[a]/[p]** at a prompt. A
+built-in denylist (`rm -rf /`, `sudo …`, `mkfs`, `curl … | sh`, …) always forces a prompt.
 
 ## Project context
 
@@ -92,6 +105,10 @@ into its system prompt and follows its conventions — like Claude Code's `CLAUD
 | `HERA_YOLO` | `0` | `1` = auto-approve every tool call (sandbox only) |
 | `HERA_MAX_STEPS` | `25` | Max tool round-trips per message |
 | `HERA_HIDE_REASONING` | `0` | `1` = don't stream the model's thinking |
+| `HERA_SANDBOX` | `auto` | `run_bash` sandbox: `auto` / `bwrap` / `unshare` / `none` |
+| `HERA_SANDBOX_NET` | `0` | `1` = allow network inside the sandbox |
+| `HERA_ALLOW` | _(empty)_ | Comma-separated `run_bash` allow patterns (also reads `.heraallow`) |
+| `HERA_DENY` | _(empty)_ | Extra deny patterns (added to the built-in list) |
 
 > Legacy `QWEN_*` variables (and `LLAMA_API_KEY`) are honoured as fallbacks.
 

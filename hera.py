@@ -25,6 +25,7 @@ import glob as globmod
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -70,8 +71,108 @@ HIDE_REASONING = _truthy(_env("HERA_HIDE_REASONING", "QWEN_HIDE_REASONING"))
 MAX_TOOL_OUTPUT = 12000    # chars; tool results longer than this are truncated
 MAX_READ_BYTES  = 256_000  # cap read_file size
 
+# Sandboxing for run_bash. Modes: auto | bwrap | unshare | none
+SANDBOX_MODE = _env("HERA_SANDBOX", default="auto").lower()
+SANDBOX_NET  = _truthy(_env("HERA_SANDBOX_NET"))  # allow network inside the sandbox
+
 # Running token usage for the whole session.
 SESSION = {"prompt": 0, "completion": 0, "total": 0, "requests": 0}
+
+
+# ── Sandbox detection ─────────────────────────────────────────────────────────
+def _detect_sandbox():
+    """Pick the best available run_bash sandbox: bwrap > unshare > none."""
+    if SANDBOX_MODE == "none":
+        return "none"
+    have_bwrap = bool(shutil.which("bwrap"))
+    have_unshare = sys.platform.startswith("linux") and bool(shutil.which("unshare"))
+    if SANDBOX_MODE == "bwrap":
+        return "bwrap" if have_bwrap else "none"
+    if SANDBOX_MODE == "unshare":
+        return "unshare" if have_unshare else "none"
+    # auto
+    if have_bwrap:
+        return "bwrap"
+    if have_unshare:
+        return "unshare"
+    return "none"
+
+
+SANDBOX_KIND = _detect_sandbox()
+
+
+def sandbox_label():
+    net = "network on" if SANDBOX_NET else "no network"
+    if SANDBOX_KIND == "bwrap":
+        return f"bwrap — fs confined to cwd, {net}"
+    if SANDBOX_KIND == "unshare":
+        return f"unshare — pid-isolated, {net} (install bubblewrap for fs confinement)"
+    return "none — run_bash runs unconfined"
+
+
+def _sandbox_argv(command):
+    """Return (argv, use_shell) to execute `command` under the active sandbox."""
+    cwd = os.getcwd()
+    if SANDBOX_KIND == "bwrap":
+        argv = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
+                "--bind", cwd, cwd, "--tmpfs", "/tmp",
+                "--die-with-parent", "--chdir", cwd]
+        if not SANDBOX_NET:
+            argv += ["--unshare-net"]
+        argv += ["--", "/bin/sh", "-c", command]
+        return argv, False
+    if SANDBOX_KIND == "unshare":
+        argv = ["unshare", "--user", "--map-root-user", "--fork", "--pid", "--mount-proc"]
+        if not SANDBOX_NET:
+            argv += ["--net"]
+        argv += ["--", "/bin/sh", "-c", command]
+        return argv, False
+    return command, True  # none → shell string
+
+
+# ── Permission allowlist ──────────────────────────────────────────────────────
+# Patterns are fnmatch-style, matched against the full run_bash command string.
+# A command auto-approves only if it matches ALLOW and not DENY. DENY always wins.
+DENY_DEFAULTS = [
+    "*rm -rf /*", "*rm -fr /*", "* rm -rf ~*", "*mkfs*", "*dd *of=/dev/*",
+    "*:(){*", "*shutdown*", "*reboot*", "*>* /dev/sd*", "*chmod -R 777 /*",
+    "*sudo *", "*curl*|*sh*", "*wget*|*sh*",
+]
+
+
+def _split_patterns(raw):
+    return [p.strip() for p in raw.replace("\n", ",").split(",") if p.strip()]
+
+
+def _load_allow():
+    pats = _split_patterns(_env("HERA_ALLOW"))
+    f = os.path.join(os.getcwd(), ".heraallow")
+    if os.path.isfile(f):
+        try:
+            with open(f, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.split("#", 1)[0].strip()
+                    if line:
+                        pats.append(line)
+        except OSError:
+            pass
+    return pats
+
+
+ALLOW_PATTERNS = _load_allow()                       # auto-approve run_bash matches
+DENY_PATTERNS  = DENY_DEFAULTS + _split_patterns(_env("HERA_DENY"))
+
+
+def _matches(cmd, patterns):
+    norm = " ".join(cmd.split())  # collapse whitespace
+    return any(fnmatch.fnmatch(norm, p) for p in patterns)
+
+
+def bash_allowed(cmd):
+    """True if the command is pre-approved by the allowlist (and not denied)."""
+    if _matches(cmd, DENY_PATTERNS):
+        return False
+    return _matches(cmd, ALLOW_PATTERNS)
 
 # ── ANSI ─────────────────────────────────────────────────────────────────────
 R    = "\033[0m"
@@ -242,13 +343,16 @@ def tool_edit_file(path, old_string, new_string, replace_all=False):
 
 
 def tool_run_bash(command, timeout=120):
+    argv, use_shell = _sandbox_argv(command)
     try:
         proc = subprocess.run(
-            command, shell=True, capture_output=True, text=True,
-            timeout=int(timeout),
+            argv, shell=use_shell, capture_output=True, text=True,
+            timeout=int(timeout), cwd=os.getcwd(),
         )
     except subprocess.TimeoutExpired:
         return f"[error] command timed out after {timeout}s"
+    except FileNotFoundError as exc:
+        return f"[error] sandbox launch failed ({exc}); set HERA_SANDBOX=none to disable"
     out = proc.stdout or ""
     err = proc.stderr or ""
     parts = []
@@ -378,6 +482,35 @@ def approve(name, args):
     """Return True to run the tool, or a string denial reason."""
     if YOLO or name not in SIDE_EFFECTS or name in _always_ok:
         return True
+
+    # run_bash: consult the command allowlist first.
+    if name == "run_bash":
+        cmd = args.get("command", "")
+        if bash_allowed(cmd):
+            print(f"  {DIM}↳ auto-approved (allowlist){R}")
+            return True
+        denied = _matches(cmd, DENY_PATTERNS)
+        print(f"\n{YELL}{BOLD}⚠ approval needed{R} {DIM}(run_bash{', matches deny-pattern' if denied else ''}){R}")
+        print(f"  $ {cmd}")
+        print(f"  {DIM}sandbox: {sandbox_label()}{R}")
+        try:
+            ans = input(f"{BOLD}  [y]es once / [a]lways this command / "
+                        f"[p]rogram (all '{cmd.split()[0] if cmd.split() else '?'}') / [n]o:{R} ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return "user aborted (no input)"
+        if ans in ("y", "yes", ""):
+            return True
+        if ans in ("a", "always"):
+            ALLOW_PATTERNS.append(" ".join(cmd.split()))
+            return True
+        if ans in ("p", "program") and cmd.split():
+            prog = cmd.split()[0]
+            ALLOW_PATTERNS.append(f"{prog} *")
+            ALLOW_PATTERNS.append(prog)
+            return True
+        return "user declined to run this tool"
+
+    # write_file / edit_file: tool-level approval.
     print(f"\n{YELL}{BOLD}⚠ approval needed{R} {DIM}({name}){R}")
     for ln in _preview_call(name, args).split("\n"):
         print(f"  {ln}")
@@ -642,12 +775,15 @@ def print_banner():
     row(f"cwd     →  {os.getcwd()[:W - 13]}", dim=True)
     mode = "auto-approve (YOLO)" if YOLO else "approval on edits/bash"
     row(f"safety  →  {mode}", dim=True)
+    row(f"sandbox →  {sandbox_label()[:W - 13]}", dim=True)
+    if ALLOW_PATTERNS:
+        row(f"allow   →  {len(ALLOW_PATTERNS)} pattern(s)", dim=True)
     if fn:
         row(f"context →  {fn}", dim=True)
     print(f"{CYAN}│{R}{' ' * W}{CYAN}│{R}")
     row("tools: list_dir read_file glob search", dim=True)
     row("       write_file edit_file run_bash", dim=True)
-    row("/tokens /tools /reasoning /cwd /clear /help", dim=True)
+    row("/tokens /tools /allow /sandbox /clear /help", dim=True)
     print(f"{CYAN}╰{'─' * W}╯{R}\n")
 
 
@@ -659,6 +795,8 @@ def print_help():
         f"  commands (unless HERA_YOLO=1).\n\n"
         f"  /tokens     show token usage this session\n"
         f"  /tools      list the tools I can use\n"
+        f"  /allow      list run_bash allow patterns (or: /allow <pattern>)\n"
+        f"  /sandbox    show the run_bash sandbox status\n"
         f"  /reasoning  toggle streaming of my thinking\n"
         f"  /cwd        show the working directory\n"
         f"  /clear      erase conversation and session approvals\n"
@@ -709,7 +847,25 @@ def main():
             continue
         if cmd == "/tools":
             print(f"\n{DIM}tools: {', '.join(TOOLS)}\n"
-                  f"  approval required: {', '.join(sorted(SIDE_EFFECTS))}{R}\n")
+                  f"  approval required: {', '.join(sorted(SIDE_EFFECTS))}\n"
+                  f"  run_bash sandbox: {sandbox_label()}{R}\n")
+            continue
+        if cmd == "/sandbox":
+            print(f"\n{DIM}sandbox: {sandbox_label()}\n"
+                  f"  mode={SANDBOX_MODE} kind={SANDBOX_KIND} network={'on' if SANDBOX_NET else 'off'}\n"
+                  f"  change with HERA_SANDBOX=bwrap|unshare|none and HERA_SANDBOX_NET=1{R}\n")
+            continue
+        if cmd == "/allow" or cmd.startswith("/allow "):
+            arg = user_input[6:].strip()
+            if arg:
+                ALLOW_PATTERNS.append(arg)
+                print(f"\n{DIM}added allow pattern: {arg!r}  ({len(ALLOW_PATTERNS)} total){R}\n")
+            elif ALLOW_PATTERNS:
+                print(f"\n{DIM}run_bash allow patterns ({len(ALLOW_PATTERNS)}):\n  "
+                      + "\n  ".join(ALLOW_PATTERNS) + f"{R}\n")
+            else:
+                print(f"\n{DIM}no allow patterns. Add one with: /allow <pattern>  "
+                      f"(e.g. /allow git status){R}\n")
             continue
         if cmd == "/cwd":
             print(f"\n{DIM}cwd: {os.getcwd()}{R}\n")
