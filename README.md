@@ -13,6 +13,9 @@ commands, streams the model's reasoning, and tracks token usage.
 
 ## Install
 
+> Replace `<SERVER_IP>` with the server's host address (provided separately by the admin). The
+> downloaded `hera` and `install.sh` already point at the right server by default.
+
 **One line** (downloads `hera` to `~/.local/bin`):
 
 ```bash
