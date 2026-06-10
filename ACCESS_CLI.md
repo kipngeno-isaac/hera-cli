@@ -28,24 +28,32 @@ from everyone else's.
 
 ## 2. Install
 
-One line (the admin gives you `<HOST>`):
+**Requirements:** Python 3.7+ and the `requests` library — `hera.py` is one file, no other deps.
+
+### Easiest — straight from the public GitHub repo
+
+```bash
+pip install requests
+curl -fsSL https://raw.githubusercontent.com/jones0011738/hera-cli/main/hera.py -o ~/.local/bin/hera
+chmod +x ~/.local/bin/hera
+```
+
+Or clone it: `git clone https://github.com/jones0011738/hera-cli`. Ensure `~/.local/bin` is on
+your `PATH`. Optionally install `bubblewrap` (`sudo apt install bubblewrap`) for full sandboxing.
+
+> The repo ships **no key and no host** — that's why it can be public. You supply both in step 3.
+
+### Alternative — the server's installer one-liner
+
+If your admin runs the download server, this fetches `hera.py`, adds `requests`, and puts `hera`
+on your `PATH`:
 
 ```bash
 HERA_SERVER=http://<HOST>:8081 bash <(curl -fsSL http://<HOST>:8081/install.sh)
 ```
 
-The installer is plain, inspectable text (`curl -fsSL http://<HOST>:8081/install.sh` to read it
-first). It checks for Python 3.7+, installs `requests`, drops the single-file agent at
-`~/.local/bin/hera`, and nudges you to install `bubblewrap` for full sandboxing. No root, sends
-nothing anywhere.
-
-**Manual install:** `pip install requests`, then download `hera.py` and make it executable:
-```bash
-HERA_SERVER=http://<HOST>:8081
-curl "$HERA_SERVER/hera.py" -o ~/.local/bin/hera && chmod +x ~/.local/bin/hera
-```
-Ensure `~/.local/bin` is on your `PATH`. (Windows: install Python, `pip install requests`,
-download `hera.py`, run `python hera.py` — set the same env vars below in PowerShell with `$env:`.)
+(Windows: install Python, `pip install requests`, download `hera.py` from the GitHub raw URL
+above, run `python hera.py` — set the step-3 env vars in PowerShell with `$env:`.)
 
 ---
 

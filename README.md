@@ -26,27 +26,42 @@ Full guides: [`ACCESS_CLI.md`](ACCESS_CLI.md) · [`ACCESS_VSCODE.md`](ACCESS_VSC
 
 ## Install
 
-> Replace `<SERVER_IP>` with the server's host address (provided separately by the admin). The
-> downloaded `hera` and `install.sh` already point at the right server by default.
+**Requirements:** Python 3.7+ and the `requests` library. That's it — `hera.py` is a single
+file with no other dependencies.
 
-**One line** (downloads `hera` to `~/.local/bin`):
-
-```bash
-curl -fsSL http://<SERVER_IP>:8081/install.sh | bash
-```
-
-The installer is plain, inspectable text — read it first if you like:
-`curl -fsSL http://<SERVER_IP>:8081/install.sh`. It needs no root and sends nothing anywhere.
-
-**Manual:**
+### Easiest — straight from this public GitHub repo
 
 ```bash
 pip install requests
-curl http://<SERVER_IP>:8081/hera.py -o ~/.local/bin/hera   # or copy hera.py from this repo
+curl -fsSL https://raw.githubusercontent.com/jones0011738/hera-cli/main/hera.py -o ~/.local/bin/hera
 chmod +x ~/.local/bin/hera
 ```
 
+(Or `git clone https://github.com/jones0011738/hera-cli && chmod +x hera-cli/hera.py`.)
 Make sure `~/.local/bin` is on your `PATH`.
+
+> Optional: install `bubblewrap` (`sudo apt install bubblewrap`) for full `run_bash` sandboxing.
+
+### Then point it at your server (required — nothing is baked into the code)
+
+```bash
+export HERA_API_URL=http://<HOST>:8090/v1      # the identity proxy (admin gives you <HOST>)
+export HERA_API_KEY=sk-...                     # your Open WebUI API key
+export HERA_USER=you@example.com               # keeps your sessions separate
+hera
+```
+
+That's why this repo can be public: it ships **no key and no host** — you supply both. See
+[`ACCESS_CLI.md`](ACCESS_CLI.md) for the full walkthrough.
+
+### Alternative — from the server's installer endpoint
+
+If your admin runs the download server, the one-liner installer also works (it adds `requests`,
+drops `hera` on your `PATH`, and nudges you to install bubblewrap):
+
+```bash
+HERA_SERVER=http://<HOST>:8081 bash <(curl -fsSL http://<HOST>:8081/install.sh)
+```
 
 ---
 
