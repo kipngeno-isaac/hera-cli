@@ -21,10 +21,12 @@ Optional:       HERA_MODEL          (default qwen3.6-35b-a3b)
 Legacy QWEN_* variables (and LLAMA_API_KEY) are still honoured as fallbacks.
 """
 import argparse
+import ast
 import fnmatch
 import glob as globmod
 import importlib.util
 import json
+import math
 import os
 import re
 import select
@@ -317,6 +319,132 @@ def tool_search(pattern, path=".", glob="*", ignore_case=False, max_results=200)
     return "\n".join(results)
 
 
+CODE_EXTS = ("py", "js", "ts", "jsx", "tsx", "go", "rs", "java", "c", "cc",
+             "cpp", "h", "hpp", "rb", "sh", "php", "cs", "kt", "swift")
+_DEF_RE = re.compile(
+    r"\b(?:func|function|class|def|fn|type|interface|struct|impl|module)\s+([A-Za-z_]\w*)")
+
+
+def _code_files(base):
+    if os.path.isfile(base):
+        return [base]
+    out = []
+    for root, dirs, files in os.walk(base):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        for fn in files:
+            if fn.rsplit(".", 1)[-1] in CODE_EXTS:
+                out.append(os.path.join(root, fn))
+    return out
+
+
+def tool_symbols(name=None, path="."):
+    """Codebase index: list function/class/etc. definitions (optionally filtered)."""
+    base = _resolve(path)
+    if not os.path.exists(base):
+        return f"[error] no such path: {base}"
+    results = []
+    for fp in _code_files(base):
+        try:
+            if os.path.getsize(fp) > MAX_READ_BYTES:
+                continue
+            with open(fp, "r", encoding="utf-8") as f:
+                text = f.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if fp.endswith(".py"):
+            try:
+                for node in ast.walk(ast.parse(text)):
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                        kind = "class" if isinstance(node, ast.ClassDef) else "def"
+                        results.append((fp, node.lineno, f"{kind} {node.name}"))
+                continue
+            except SyntaxError:
+                pass  # fall through to regex
+        for i, line in enumerate(text.splitlines(), 1):
+            m = _DEF_RE.search(line)
+            if m:
+                results.append((fp, i, line.strip()[:100]))
+    if name:
+        nl = name.lower()
+        results = [r for r in results if nl in r[2].lower()]
+    if not results:
+        return f"(no symbols{' matching ' + repr(name) if name else ''} under {base})"
+    results.sort()
+    out = "\n".join(f"{fp}:{ln}: {sig}" for fp, ln, sig in results[:300])
+    if len(results) > 300:
+        out += f"\n…[{len(results) - 300} more]"
+    return out
+
+
+# ── Semantic search (embeddings-backed; registered only if available) ──────────
+EMBED_URL   = _env("HERA_EMBED_URL", default=API_URL)
+EMBED_MODEL = _env("HERA_EMBED_MODEL", default=MODEL)
+
+
+def _embed(texts):
+    """Return a list of embedding vectors for `texts` via an OpenAI-compatible API."""
+    resp = requests.post(
+        f"{EMBED_URL}/embeddings",
+        json={"model": EMBED_MODEL, "input": texts},
+        headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
+        timeout=120,
+    )
+    resp.raise_for_status()
+    return [d["embedding"] for d in resp.json()["data"]]
+
+
+def embeddings_available():
+    try:
+        v = _embed(["ping"])
+        return bool(v and v[0])
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _cosine(a, b):
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    return dot / (na * nb) if na and nb else 0.0
+
+
+def tool_semantic_search(query, path=".", k=8):
+    """Rank code chunks by embedding similarity to the query."""
+    base = _resolve(path)
+    chunks = []  # (file, start_line, text)
+    for fp in _code_files(base):
+        try:
+            if os.path.getsize(fp) > MAX_READ_BYTES:
+                continue
+            with open(fp, "r", encoding="utf-8") as f:
+                lines = f.read().splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        for i in range(0, len(lines), 40):
+            block = "\n".join(lines[i:i + 40]).strip()
+            if block:
+                chunks.append((fp, i + 1, block))
+        if len(chunks) >= 400:
+            break
+    if not chunks:
+        return f"(no code to search under {base})"
+    try:
+        qvec = _embed([query])[0]
+        # batch chunk embeddings to keep requests reasonable
+        vecs = []
+        texts = [c[2][:2000] for c in chunks]
+        for j in range(0, len(texts), 64):
+            vecs.extend(_embed(texts[j:j + 64]))
+    except Exception as exc:  # noqa: BLE001
+        return f"[error] embeddings request failed: {exc}"
+    scored = sorted(zip(chunks, vecs), key=lambda cv: _cosine(qvec, cv[1]), reverse=True)
+    lines_out = []
+    for (fp, ln, text), vec in scored[:int(k)]:
+        snippet = text.splitlines()[0][:100] if text else ""
+        lines_out.append(f"{fp}:{ln}: ({_cosine(qvec, vec):.2f}) {snippet}")
+    return "\n".join(lines_out)
+
+
 def tool_write_file(path, content):
     p = _resolve(path)
     parent = os.path.dirname(p)
@@ -375,6 +503,7 @@ TOOLS = {
     "read_file":  tool_read_file,
     "glob":       tool_glob,
     "search":     tool_search,
+    "symbols":    tool_symbols,
     "write_file": tool_write_file,
     "edit_file":  tool_edit_file,
     "run_bash":   tool_run_bash,
@@ -420,6 +549,16 @@ TOOL_SCHEMAS = [
             "ignore_case": {"type": "boolean", "description": "Case-insensitive match (default false)"},
             "max_results": {"type": "integer", "description": "Cap on matches returned (default 200)"},
         }, "required": ["pattern"]},
+    }},
+    {"type": "function", "function": {
+        "name": "symbols",
+        "description": ("Codebase index: list function/class/type definitions across the "
+                        "project as path:line: signature. Pass `name` to filter. Great for "
+                        "'where is X defined?'."),
+        "parameters": {"type": "object", "properties": {
+            "name": {"type": "string", "description": "Only show symbols whose signature contains this (optional)"},
+            "path": {"type": "string", "description": "Directory or file to index (default '.')"},
+        }, "required": []},
     }},
     {"type": "function", "function": {
         "name": "write_file",
@@ -661,6 +800,44 @@ def _account(usage):
     return t
 
 
+# ── Edit checkpoints / undo ───────────────────────────────────────────────────
+CHECKPOINTS = []  # stack of {path, existed, content, label}
+
+
+def _snapshot(path):
+    """Capture a file's prior state: (existed, content-or-None)."""
+    p = _resolve(path)
+    if os.path.isfile(p):
+        try:
+            with open(p, "r", encoding="utf-8", errors="replace") as f:
+                return True, f.read()
+        except OSError:
+            return True, None
+    return False, None
+
+
+def push_checkpoint(path, snap, label):
+    CHECKPOINTS.append({"path": _resolve(path), "existed": snap[0],
+                        "content": snap[1], "label": label})
+
+
+def undo_last():
+    if not CHECKPOINTS:
+        return "nothing to undo"
+    cp = CHECKPOINTS.pop()
+    p = cp["path"]
+    try:
+        if cp["existed"]:
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(cp["content"] or "")
+            return f"reverted {p} (undid {cp['label']})"
+        if os.path.exists(p):
+            os.remove(p)
+        return f"deleted {p} (it was created by {cp['label']})"
+    except OSError as exc:
+        return f"[error] undo failed: {exc}"
+
+
 # ── Agent loop ────────────────────────────────────────────────────────────────
 def run_agent(messages, spinner):
     """Drive the reason→act loop until the model produces a final answer."""
@@ -706,12 +883,16 @@ def run_agent(messages, spinner):
                     output = f"[denied] {verdict}"
                     print(f"  {RED}✗ {verdict}{R}")
                 else:
+                    # Snapshot file state before a mutating edit so /undo can revert it.
+                    snap = _snapshot(args.get("path", "")) if name in ("write_file", "edit_file") else None
                     try:
                         output = TOOLS[name](**args)
                     except TypeError as exc:
                         output = f"[error] bad arguments: {exc}"
                     except Exception as exc:  # noqa: BLE001 — surface to the model
                         output = f"[error] {type(exc).__name__}: {exc}"
+                    if snap is not None and not str(output).startswith("[error]"):
+                        push_checkpoint(args.get("path", ""), snap, name)
                     preview = output.splitlines()[0] if output else "(no output)"
                     print(f"  {DIM}{preview[:100]}{R}")
 
@@ -971,6 +1152,25 @@ def register_custom_tools():
     return loaded
 
 
+def register_semantic_search():
+    """Register the embeddings-backed semantic_search tool iff an endpoint works."""
+    if not embeddings_available():
+        return False
+    TOOLS["semantic_search"] = tool_semantic_search
+    TOOL_SCHEMAS.append({"type": "function", "function": {
+        "name": "semantic_search",
+        "description": ("Rank code chunks by embedding similarity to a natural-language "
+                        "query (returns path:line: (score) snippet). Use for fuzzy "
+                        "'where is the logic that …' questions."),
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "Natural-language query"},
+            "path":  {"type": "string", "description": "Directory to search (default '.')"},
+            "k":     {"type": "integer", "description": "Number of results (default 8)"},
+        }, "required": ["query"]},
+    }})
+    return True
+
+
 def register_extensions():
     mcp = register_mcp()
     custom = register_custom_tools()
@@ -979,6 +1179,8 @@ def register_extensions():
               f"{'…' if len(mcp) > 6 else ''}{R}")
     if custom:
         print(f"{DIM}[ext] loaded {len(custom)} custom tool(s): {', '.join(custom)}{R}")
+    if register_semantic_search():
+        print(f"{DIM}[ext] semantic_search enabled (embeddings at {EMBED_URL}){R}")
 
 
 def close_extensions():
@@ -1007,10 +1209,12 @@ def system_prompt():
         f"You are {NAME}, an agentic coding assistant running in a terminal. "
         f"You operate in the working directory: {os.getcwd()} (OS: {sys.platform}). "
         "You have tools to list directories, find files by glob, search file contents by "
-        "regex, read files, write files, edit files by exact string replacement, and run "
-        "shell commands. "
-        "Use glob/search to locate relevant code, then read files before changing anything; "
-        "make edits with precise old_string/new_string. "
+        "regex, index code definitions (symbols), read files, write files, edit files by "
+        "exact string replacement, and run shell commands. A semantic_search tool may also "
+        "be available for fuzzy 'where is the code that…' questions. "
+        "Use glob/search/symbols to locate relevant code, then read files before changing "
+        "anything; make edits with precise old_string/new_string. File edits are revertible "
+        "by the user with /undo. "
         "Keep prose short — act with tools rather than describing what you would do. "
         "When the task is complete, give a brief summary of what you changed."
     )
@@ -1019,6 +1223,54 @@ def system_prompt():
         base += (f"\n\nThe project provides a context file ({fn}). Follow its "
                  f"instructions and conventions:\n\n{body}")
     return base
+
+
+# ── @file mentions & context compaction ───────────────────────────────────────
+def expand_mentions(text):
+    """Inline the contents of any @path the user references. Returns (text, names)."""
+    attached = []
+    for tok in re.findall(r"(?<!\S)@([^\s]+)", text):
+        p = _resolve(tok)
+        if os.path.isfile(p):
+            try:
+                with open(p, "r", encoding="utf-8", errors="replace") as f:
+                    attached.append((tok, f.read()[:MAX_READ_BYTES]))
+            except OSError:
+                pass
+    if not attached:
+        return text, []
+    blocks = "\n\n".join(f"--- {n} ---\n{c}" for n, c in attached)
+    return f"{text}\n\n[Attached files]\n{blocks}", [n for n, _ in attached]
+
+
+def compact_history(messages):
+    """Replace the conversation with a model-written summary to free up context."""
+    if len(messages) <= 2:
+        return "nothing to compact yet"
+    convo = []
+    for m in messages[1:]:
+        c = m.get("content") or ""
+        if m.get("tool_calls"):
+            c += " [tools: " + ", ".join(tc["function"]["name"] for tc in m["tool_calls"]) + "]"
+        convo.append(f"{m.get('role')}: {c[:1500]}")
+    prompt = ("Summarize this coding session concisely, preserving key decisions, file changes, "
+              "and any open tasks so work can continue:\n\n" + "\n".join(convo))
+    try:
+        resp = requests.post(
+            f"{API_URL}/chat/completions",
+            json={"model": MODEL, "messages": [{"role": "user", "content": prompt}], "stream": False},
+            headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
+            timeout=300,
+        )
+        resp.raise_for_status()
+        summary = resp.json()["choices"][0]["message"].get("content") or ""
+    except Exception as exc:  # noqa: BLE001
+        return f"[error] compact failed: {exc}"
+    if not summary.strip():
+        return "[error] compact produced no summary"
+    messages[:] = [messages[0],
+                   {"role": "user", "content": f"[Summary of earlier conversation]\n{summary}"}]
+    return f"compacted to a summary ({len(summary)} chars); history reset"
 
 
 # ── Banner / help ──────────────────────────────────────────────────────────────
@@ -1047,9 +1299,9 @@ def print_banner():
     if fn:
         row(f"context →  {fn}", dim=True)
     print(f"{CYAN}│{R}{' ' * W}{CYAN}│{R}")
-    row("tools: list_dir read_file glob search", dim=True)
+    row("tools: list_dir read_file glob search symbols", dim=True)
     row("       write_file edit_file run_bash", dim=True)
-    row("/tokens /tools /allow /sandbox /sessions /help", dim=True)
+    row("/undo /diff /compact /sessions /tools /help", dim=True)
     print(f"{CYAN}╰{'─' * W}╯{R}\n")
 
 
@@ -1058,7 +1310,10 @@ def print_help():
         f"\n{DIM}"
         f"  Ask me to build, fix, explain, or refactor code. I work in the\n"
         f"  current directory and ask before editing files or running shell\n"
-        f"  commands (unless HERA_YOLO=1).\n\n"
+        f"  commands (unless HERA_YOLO=1). Reference files with @path to attach them.\n\n"
+        f"  /undo       revert the last file write/edit I made\n"
+        f"  /diff       show the working-tree git diff\n"
+        f"  /compact    summarize the conversation to free up context\n"
         f"  /tokens     show token usage this session\n"
         f"  /tools      list the tools I can use\n"
         f"  /allow      list run_bash allow patterns (or: /allow <pattern>)\n"
@@ -1161,6 +1416,25 @@ def _repl(messages, spinner):
         if cmd == "/sessions":
             print_sessions()
             continue
+        if cmd == "/undo":
+            print(f"\n{DIM}{undo_last()}{R}\n")
+            continue
+        if cmd == "/diff":
+            inrepo = subprocess.run("git rev-parse --is-inside-work-tree",
+                                    shell=True, capture_output=True, text=True, cwd=os.getcwd())
+            if inrepo.returncode != 0:
+                print(f"\n{DIM}not a git repository — /diff needs git{R}\n")
+                continue
+            proc = subprocess.run("git diff --stat && echo '---' && git diff",
+                                  shell=True, capture_output=True, text=True, cwd=os.getcwd())
+            out = (proc.stdout or "").rstrip() or "(no changes)"
+            print(f"\n{DIM}{out[:6000]}{R}\n")
+            continue
+        if cmd == "/compact":
+            print(f"\n{DIM}compacting…{R}")
+            print(f"{DIM}{compact_history(messages)}{R}\n")
+            save_session(messages)
+            continue
         if cmd == "/help":
             print_help()
             continue
@@ -1200,7 +1474,10 @@ def _repl(messages, spinner):
             print(f"\n{DIM}reasoning is now {state}.{R}\n")
             continue
 
-        messages.append({"role": "user", "content": user_input})
+        content, attached = expand_mentions(user_input)
+        if attached:
+            print(f"{DIM}  ↳ attached: {', '.join(attached)}{R}")
+        messages.append({"role": "user", "content": content})
         try:
             ok = run_agent(messages, spinner)
         except KeyboardInterrupt:

@@ -58,6 +58,8 @@ that edits files or runs a command (`[y]es / [a]lways / [n]o`). Read-only tools 
 | `read_file` | Read a file (line-numbered) | auto |
 | `glob` | Find files by pattern (e.g. `**/*.py`) | auto |
 | `search` | Grep file contents by regex | auto |
+| `symbols` | Codebase index: list function/class/type definitions | auto |
+| `semantic_search` | Embedding-ranked code search (only if an embeddings endpoint is reachable) | auto |
 | `write_file` | Create / overwrite a file | prompts |
 | `edit_file` | Exact string replacement in a file | prompts |
 | `run_bash` | Run a shell command | prompts |
@@ -66,6 +68,9 @@ that edits files or runs a command (`[y]es / [a]lways / [n]o`). Read-only tools 
 
 | Command | Effect |
 |---|---|
+| `/undo` | Revert the last file write/edit (repeatable) |
+| `/diff` | Show the working-tree `git diff` |
+| `/compact` | Summarize the conversation to free up context |
 | `/tokens` | Show token usage this session |
 | `/tools` | List the tools Hera can use (incl. MCP/custom) |
 | `/allow` | List `run_bash` allow patterns (or `/allow <pattern>` to add one) |
@@ -77,6 +82,9 @@ that edits files or runs a command (`[y]es / [a]lways / [n]o`). Read-only tools 
 | `/clear` | Same as `/new` |
 | `/help` | Show command list |
 | `/exit` | Quit (Ctrl-C / Ctrl-D also work) |
+
+Reference files with **`@path`** to attach their contents. Every `write_file`/`edit_file` is
+checkpointed, so **`/undo`** rolls back the last one.
 
 ## Sessions & resume
 
@@ -152,8 +160,11 @@ into its system prompt and follows its conventions — like Claude Code's `CLAUD
 | `HERA_DENY` | _(empty)_ | Extra deny patterns (added to the built-in list) |
 | `HERA_SESSIONS_DIR` | `~/.config/hera/sessions` | Where session transcripts are saved |
 | `HERA_MCP_CONFIG` | `~/.config/hera/mcp.json` | MCP servers config (Claude-Desktop shape) |
+| `HERA_EMBED_URL` | = `HERA_API_URL` | Embeddings endpoint for `semantic_search` (server needs `--embeddings`) |
+| `HERA_EMBED_MODEL` | = `HERA_MODEL` | Model name for embeddings requests |
 
 > Legacy `QWEN_*` variables (and `LLAMA_API_KEY`) are honoured as fallbacks.
+> `semantic_search` is enabled only when the embeddings endpoint responds; otherwise use `symbols` + `search`.
 
 ---
 
