@@ -19,7 +19,8 @@ reachable two other ways (provided by the full stack, not this repo):
 - **Web** — an Open WebUI browser chat with per-user, email-based login.
 
 Your **Open WebUI API key** is the single credential across all three (terminal, editor, web).
-Ask your admin for the VS Code (`ACCESS_VSCODE.md`) and web (`ACCESS_WEB.md`) guides.
+Full guides: [`ACCESS_CLI.md`](ACCESS_CLI.md) · [`ACCESS_VSCODE.md`](ACCESS_VSCODE.md) ·
+[`ACCESS_WEB.md`](ACCESS_WEB.md).
 
 ---
 
