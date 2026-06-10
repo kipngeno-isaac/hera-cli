@@ -1,23 +1,28 @@
 #!/usr/bin/env bash
 #
-# Hera CLI installer — transparent, inspect it before running:
-#   curl -fsSL http://<HOST>:8081/install.sh
+# Hera CLI installer — transparent, inspect it before running.
 #
-# Usage:
-#   curl -fsSL http://<HOST>:8081/install.sh | bash
+# Usage (the admin gives approved users the download host):
+#   HERA_SERVER=http://<host>:8081 bash <(curl -fsSL http://<host>:8081/install.sh)
 #
 # This script does exactly three things, and nothing hidden:
 #   1. checks you have python3 (and installs the 'requests' library if missing)
 #   2. downloads the single-file agent (hera.py) to ~/.local/bin/hera
-#   3. tells you how to set your API key and run it
+#   3. tells you how to set your endpoint + API key and run it
 #
 # It does NOT send anything anywhere, and it does NOT need root.
 #
 set -euo pipefail
 
-SERVER="${HERA_SERVER:-http://<HOST>:8081}"
+SERVER="${HERA_SERVER:-}"
 BIN_DIR="${HERA_BIN_DIR:-$HOME/.local/bin}"
 DEST="$BIN_DIR/hera"
+
+if [ -z "$SERVER" ]; then
+    echo "error: set HERA_SERVER to the download host, e.g." >&2
+    echo "  HERA_SERVER=http://<host>:8081 bash <(curl -fsSL http://<host>:8081/install.sh)" >&2
+    exit 1
+fi
 
 echo "Hera CLI installer"
 echo "  download from : $SERVER/hera.py"
@@ -80,12 +85,13 @@ esac
 
 cat <<EOF
 
-Done. Two steps left:
+Done. Set your endpoint + personal key (from your Open WebUI account), then run:
 
-  1. Set your API key (ask the admin for it — it's LLAMA_API_KEY on the server):
-       export HERA_API_KEY=<key>
+  1. export HERA_API_URL=http://<host>:3000/api    # your Open WebUI endpoint
+     export HERA_API_KEY=<your personal API key>   # Open WebUI → Settings → Account → API keys
+     export HERA_USER=<your-email>                 # optional: keeps your sessions separate
 
-  2. cd into the project you want to work on, then run:
+  2. cd into your project, then run:
        hera
 
 EOF

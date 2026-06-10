@@ -8,10 +8,9 @@ commands in the directory you launch it from. It asks for approval before
 editing files or running commands, streams the model's reasoning, and tracks
 token usage.
 
-Default server: http://<HOST>:8080/v1
-Override:       HERA_API_URL=http://other-host:8080/v1 hera
-
-Required:       HERA_API_KEY  (bearer key the server enforces; = LLAMA_API_KEY)
+Required:       HERA_API_URL  (the endpoint, e.g. http://<host>:8080/v1 — no host is
+                              baked in, so this file can live in a public repo)
+                HERA_API_KEY  (bearer key the server enforces)
 Optional:       HERA_MODEL          (default qwen3.6-35b-a3b)
                 HERA_NAME           (assistant display name; default Hera)
                 HERA_YOLO=1         auto-approve every tool call (no prompts)
@@ -24,6 +23,7 @@ import argparse
 import ast
 import fnmatch
 import glob as globmod
+import hashlib
 import importlib.util
 import json
 import math
@@ -66,7 +66,9 @@ def _truthy(v):
 
 
 NAME    = _env("HERA_NAME", default="Hera")
-API_URL = _env("HERA_API_URL", "QWEN_API_URL", default="http://<HOST>:8080/v1")
+# No server host is baked in (so this repo can be public, revealing neither key
+# nor host). Each user supplies HERA_API_URL + HERA_API_KEY (given on approval).
+API_URL = _env("HERA_API_URL", "QWEN_API_URL", default="").rstrip("/")
 MODEL   = _env("HERA_MODEL",   "QWEN_MODEL",   default="qwen3.6-35b-a3b")
 API_KEY = _env("HERA_API_KEY", "QWEN_API_KEY", "LLAMA_API_KEY", default="")
 YOLO    = _truthy(_env("HERA_YOLO", "QWEN_YOLO"))
@@ -1057,8 +1059,23 @@ TOOL_SCHEMAS.append({"type": "function", "function": {
 
 
 # ── Session persistence / resume ──────────────────────────────────────────────
-SESSIONS_DIR = os.path.expanduser(_env("HERA_SESSIONS_DIR",
-                                        default="~/.config/hera/sessions"))
+def _user_id():
+    """Stable per-user id so sessions never mix on a shared machine.
+
+    Uses HERA_USER (e.g. the user's email) if set, else a hash of the API key
+    (each Open WebUI user has their own key → their own session store)."""
+    u = _env("HERA_USER")
+    if u:
+        return re.sub(r"[^A-Za-z0-9._@-]", "_", u)[:64]
+    if API_KEY:
+        return "key-" + hashlib.sha256(API_KEY.encode()).hexdigest()[:12]
+    return "default"
+
+
+USER_ID = _user_id()
+SESSIONS_DIR = os.path.join(
+    os.path.expanduser(_env("HERA_SESSIONS_DIR", default="~/.config/hera/sessions")),
+    USER_ID)
 CURRENT_SESSION = {"id": None, "created": None}
 
 
@@ -1672,6 +1689,9 @@ def _serve_run(messages):
 
 
 def serve_main():
+    if not API_URL:
+        _emit({"type": "error", "message": "no server set — set HERA_API_URL"})
+        return
     register_extensions(quiet=True)
     CURRENT_SESSION["id"] = new_session_id()
     CURRENT_SESSION["created"] = _now()
@@ -1737,6 +1757,11 @@ def main():
         print_sessions()
         return
 
+    if not API_URL:
+        print(f"{RED}[error] no server set. Export HERA_API_URL (and HERA_API_KEY), e.g.:\n"
+              f"  export HERA_API_URL=http://<host>:3000/api   # your Open WebUI endpoint\n"
+              f"  export HERA_API_KEY=<your personal key>{R}", file=sys.stderr)
+        return
     if not API_KEY:
         print(f"{YELL}[warn] no API key set — the server will reject requests with 401.\n"
               f"       export HERA_API_KEY=<key> and re-run.{R}\n", file=sys.stderr)

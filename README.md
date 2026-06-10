@@ -154,8 +154,9 @@ into its system prompt and follows its conventions — like Claude Code's `CLAUD
 
 | Variable | Default | Description |
 |---|---|---|
+| `HERA_API_URL` | _(required)_ | Endpoint, e.g. `http://<host>:8080/v1` (given to you on approval). No host is baked into the code. |
 | `HERA_API_KEY` | _(empty)_ | **Required** bearer key. Missing → `401`. |
-| `HERA_API_URL` | `http://<SERVER_IP>:8080/v1` | Server URL |
+| `HERA_USER` | _(key hash)_ | Identity for per-user session isolation (e.g. your email). |
 | `HERA_MODEL` | `qwen3.6-35b-a3b` | Model name sent to the API |
 | `HERA_NAME` | `Hera` | Assistant display name |
 | `HERA_YOLO` | `0` | `1` = auto-approve every tool call (sandbox only) |
