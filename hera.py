@@ -200,15 +200,69 @@ def bash_allowed(cmd):
         return False
     return _matches(cmd, ALLOW_PATTERNS)
 
-# ── ANSI ─────────────────────────────────────────────────────────────────────
-R    = "\033[0m"
-BOLD = "\033[1m"
-DIM  = "\033[2m"
-CYAN = "\033[96m"
-GREEN= "\033[92m"
-RED  = "\033[91m"
-YELL = "\033[93m"
-BLUE = "\033[94m"
+# ── Theme ─────────────────────────────────────────────────────────────────────
+# Colour is on for interactive terminals; disabled for pipes, NO_COLOR, or
+# HERA_NO_COLOR. HERA_FORCE_COLOR=1 forces it on (useful for demos/screenshots).
+USE_COLOR = (
+    _truthy(_env("HERA_FORCE_COLOR"))
+    or (sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+        and not _truthy(_env("HERA_NO_COLOR")))
+)
+
+
+def _sgr(code):
+    return f"\033[{code}m" if USE_COLOR else ""
+
+
+R     = _sgr("0")
+BOLD  = _sgr("1")
+DIM   = _sgr("2")
+ITAL  = _sgr("3")
+CYAN  = _sgr("96")
+GREEN = _sgr("92")
+RED   = _sgr("91")
+YELL  = _sgr("93")
+BLUE  = _sgr("94")
+MAG   = _sgr("95")
+GREY  = _sgr("90")
+TEAL  = _sgr("38;5;44")
+SKY   = _sgr("38;5;39")
+IND    = _sgr("38;5;33")
+ACCENT = CYAN
+
+
+# ── Lightweight markdown rendering (per completed line) ────────────────────────
+def _md_inline(s):
+    s = re.sub(r"\*\*(.+?)\*\*", lambda m: f"{BOLD}{m.group(1)}{R}", s)
+    s = re.sub(r"`([^`]+)`", lambda m: f"{CYAN}{m.group(1)}{R}", s)
+    return s
+
+
+def render_md_line(line, state):
+    """Style one completed markdown line. `state` tracks fenced-code blocks."""
+    try:
+        stripped = line.rstrip()
+        if stripped.lstrip().startswith("```"):
+            state["code"] = not state["code"]
+            lang = stripped.lstrip()[3:].strip()
+            if state["code"]:
+                return f"  {GREY}┌─ {lang or 'code'} {'─' * max(0, 40 - len(lang))}{R}"
+            return f"  {GREY}└{'─' * 46}{R}"
+        if state["code"]:
+            return f"  {GREY}│{R} {line}"
+        if re.match(r"^#{1,6}\s", stripped):
+            return f"{BOLD}{CYAN}{re.sub(r'^#{1,6}s*', '', stripped).lstrip('# ')}{R}"
+        m = re.match(r"^(\s*)[-*+]\s+(.*)", line)
+        if m:
+            return f"{m.group(1)}  {CYAN}•{R} {_md_inline(m.group(2))}"
+        m = re.match(r"^(\s*)(\d+)\.\s+(.*)", line)
+        if m:
+            return f"{m.group(1)}  {CYAN}{m.group(2)}.{R} {_md_inline(m.group(3))}"
+        if stripped.startswith(">"):
+            return f"  {GREY}▏{R} {DIM}{stripped[1:].strip()}{R}"
+        return _md_inline(line)
+    except Exception:  # noqa: BLE001 — never let rendering break the stream
+        return line
 
 
 # ── Spinner ───────────────────────────────────────────────────────────────────
@@ -733,11 +787,14 @@ def stream_turn(messages, spinner, tools=None):
     started       = False
     in_reasoning  = False
 
+    line_buf = ""               # buffers content until a newline, then renders it
+    md_state = {"code": False}
+
     def ensure_header():
         nonlocal started
         if not started:
             elapsed = spinner.stop()
-            print(f"{CYAN}{BOLD}{NAME}{R}  {DIM}(first token in {elapsed:.1f}s){R}\n")
+            print(f"\n{ACCENT}▌{R} {BOLD}{NAME}{R}  {GREY}· {elapsed:.1f}s to first token{R}\n")
             started = True
 
     for raw in resp.iter_lines():
@@ -769,7 +826,7 @@ def stream_turn(messages, spinner, tools=None):
         if reasoning and not HIDE_REASONING:
             ensure_header()
             if not in_reasoning:
-                print(f"{DIM}thinking…\n", end="", flush=True)
+                print(f"{DIM}{ITAL}✶ thinking…{R}\n{DIM}", end="", flush=True)
                 in_reasoning = True
             print(f"{DIM}{reasoning}{R}", end="", flush=True)
 
@@ -778,8 +835,11 @@ def stream_turn(messages, spinner, tools=None):
             if in_reasoning:
                 print(f"{R}\n\n", end="", flush=True)
                 in_reasoning = False
-            print(token, end="", flush=True)
             content.append(token)
+            line_buf += token
+            while "\n" in line_buf:
+                done, line_buf = line_buf.split("\n", 1)
+                print(render_md_line(done, md_state), flush=True)
 
         for tc in delta.get("tool_calls", []):
             idx = tc.get("index", 0)
@@ -794,6 +854,8 @@ def stream_turn(messages, spinner, tools=None):
 
     if in_reasoning:
         print(f"{R}\n", end="", flush=True)
+    if line_buf:  # flush any trailing partial line
+        print(render_md_line(line_buf, md_state), flush=True)
 
     return {
         "content": "".join(content),
@@ -878,9 +940,8 @@ def run_agent(messages, spinner):
         messages.append(assistant_msg)
 
         if not calls:
-            print(f"\n\n{DIM}{'─' * 54}{R}")
-            print(f"{DIM}tokens: {turn_tokens} this turn · {SESSION['total']} session "
-                  f"(prompt {SESSION['prompt']} / completion {SESSION['completion']}){R}\n")
+            print(f"\n{GREY}{'─' * 50}{R}")
+            print(f"{GREY}  {turn_tokens} tok this turn · {SESSION['total']} session{R}\n")
             return True
 
         for c in calls:
@@ -899,14 +960,15 @@ def _exec_call(c, indent=""):
     except json.JSONDecodeError:
         args = {}
 
-    print(f"\n{indent}{BLUE}● {name}{R} {DIM}{_preview_call(name, args).splitlines()[0]}{R}")
+    print(f"\n{indent}{TEAL}◆{R} {BOLD}{name}{R}  {GREY}{_preview_call(name, args).splitlines()[0]}{R}")
 
     if name not in TOOLS:
+        print(f"{indent}  {GREY}⎿{R} {RED}unknown tool{R}")
         return f"[error] unknown tool: {name}"
 
     verdict = approve(name, args)
     if verdict is not True:
-        print(f"{indent}  {RED}✗ {verdict}{R}")
+        print(f"{indent}  {GREY}⎿{R} {RED}✗ {verdict}{R}")
         return f"[denied] {verdict}"
 
     # Snapshot file state before a mutating edit so /undo can revert it.
@@ -919,7 +981,9 @@ def _exec_call(c, indent=""):
         output = f"[error] {type(exc).__name__}: {exc}"
     if snap is not None and not str(output).startswith("[error]"):
         push_checkpoint(args.get("path", ""), snap, name)
-    print(f"{indent}  {DIM}{(output.splitlines()[0] if output else '(no output)')[:100]}{R}")
+    preview = (output.splitlines()[0] if output else "(no output)")[:100]
+    is_err = str(output).startswith("[error]")
+    print(f"{indent}  {GREY}⎿{R} {(RED if is_err else GREY)}{preview}{R}")
 
     if len(output) > MAX_TOOL_OUTPUT:
         output = output[:MAX_TOOL_OUTPUT] + f"\n…[truncated, {len(output)} chars total]"
@@ -1355,35 +1419,55 @@ def compact_history(messages):
 
 
 # ── Banner / help ──────────────────────────────────────────────────────────────
+VERSION = "0.3"
+
+_WORDMARK = [
+    "█  █  ████  ███    ██ ",
+    "█  █  █     █  █  █  █ ",
+    "████  ███   ███   ████ ",
+    "█  █  █     █ █   █  █ ",
+    "█  █  ████  █  █  █  █ ",
+]
+
+
+def _short(path, n=40):
+    home = os.path.expanduser("~")
+    if path.startswith(home):
+        path = "~" + path[len(home):]
+    return path if len(path) <= n else "…" + path[-(n - 1):]
+
+
 def print_banner():
     host = API_URL.replace("http://", "").replace("https://", "").replace("/v1", "")
     fn, _ = load_project_context()
-    W = 52
-    def row(text, dim=False):
-        pad = W - len(text) - 2
-        style = DIM if dim else ""
-        print(f"{CYAN}│{R}  {style}{text}{R}{' ' * max(pad, 0)}{CYAN}│{R}")
+    shades = [SKY, SKY, TEAL, IND, IND]
 
-    print(f"\n{CYAN}╭{'─' * W}╮{R}")
-    row(f"✦  {NAME} — agentic coding CLI")
-    print(f"{CYAN}│{R}{' ' * W}{CYAN}│{R}")
-    row(f"model   →  {MODEL}", dim=True)
-    row(f"server  →  {host}", dim=True)
-    row(f"cwd     →  {os.getcwd()[:W - 13]}", dim=True)
-    mode = "auto-approve (YOLO)" if YOLO else "approval on edits/bash"
-    row(f"safety  →  {mode}", dim=True)
-    row(f"sandbox →  {sandbox_label()[:W - 13]}", dim=True)
+    print()
+    for sh, line in zip(shades, _WORDMARK):
+        print(f"  {sh}{line}{R}")
+    print(f"  {DIM}agentic coding CLI{R}  {GREY}· v{VERSION} · {MODEL}{R}\n")
+
+    rule = f"  {GREY}{'─' * 50}{R}"
+
+    def row(label, value, vcolor=""):
+        print(f"  {ACCENT}▎{R} {DIM}{label:<8}{R}{vcolor}{value}{R}")
+
+    print(rule)
+    row("server", host)
+    row("cwd", _short(os.getcwd()))
+    row("safety", "auto-approve (YOLO)" if YOLO else "approval on edits & bash",
+        RED if YOLO else "")
+    row("sandbox", sandbox_label())
     if ALLOW_PATTERNS:
-        row(f"allow   →  {len(ALLOW_PATTERNS)} pattern(s)", dim=True)
+        row("allow", f"{len(ALLOW_PATTERNS)} pattern(s)")
     if EXT_TOOLS:
-        row(f"ext     →  {len(EXT_TOOLS)} mcp/custom tool(s)", dim=True)
+        row("ext", f"{len(EXT_TOOLS)} mcp/custom tool(s)")
     if fn:
-        row(f"context →  {fn}", dim=True)
-    print(f"{CYAN}│{R}{' ' * W}{CYAN}│{R}")
-    row("tools: list_dir read_file glob search symbols", dim=True)
-    row("       write_file edit_file run_bash task", dim=True)
-    row("/undo /diff /compact /sessions /tools /help", dim=True)
-    print(f"{CYAN}╰{'─' * W}╯{R}\n")
+        row("context", fn, GREEN)
+    row("tools", f"{len(TOOLS)} available")
+    print(rule)
+    print(f"  {DIM}type a task  ·  {R}{CYAN}@path{R}{DIM} to attach a file  ·  "
+          f"{R}{CYAN}/help{R}{DIM} for commands{R}\n")
 
 
 def print_help():
@@ -1476,7 +1560,7 @@ def _repl(messages, spinner):
     global HIDE_REASONING
     while True:
         try:
-            user_input = input(f"{GREEN}{BOLD}You:{R}  ").strip()
+            user_input = input(f"{ACCENT}{BOLD}❯{R} ").strip()
         except (EOFError, KeyboardInterrupt):
             print(f"\n{DIM}Session ended.{R}")
             break

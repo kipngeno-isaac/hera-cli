@@ -161,6 +161,8 @@ into its system prompt and follows its conventions — like Claude Code's `CLAUD
 | `HERA_YOLO` | `0` | `1` = auto-approve every tool call (sandbox only) |
 | `HERA_MAX_STEPS` | `25` | Max tool round-trips per message |
 | `HERA_HIDE_REASONING` | `0` | `1` = don't stream the model's thinking |
+| `HERA_NO_COLOR` | `0` | `1` = disable colour/styling (also honours `NO_COLOR`) |
+| `HERA_FORCE_COLOR` | `0` | `1` = force colour even when output isn't a TTY |
 | `HERA_SANDBOX` | `auto` | `run_bash` sandbox: `auto` / `bwrap` / `unshare` / `none` |
 | `HERA_SANDBOX_NET` | `0` | `1` = allow network inside the sandbox |
 | `HERA_ALLOW` | _(empty)_ | Comma-separated `run_bash` allow patterns (also reads `.heraallow`) |
