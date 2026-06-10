@@ -20,11 +20,14 @@ Optional:       HERA_MODEL          (default qwen3.6-35b-a3b)
 
 Legacy QWEN_* variables (and LLAMA_API_KEY) are still honoured as fallbacks.
 """
+import argparse
 import fnmatch
 import glob as globmod
+import importlib.util
 import json
 import os
 import re
+import select
 import shutil
 import subprocess
 import sys
@@ -725,6 +728,264 @@ def run_agent(messages, spinner):
     return True
 
 
+# ── Session persistence / resume ──────────────────────────────────────────────
+SESSIONS_DIR = os.path.expanduser(_env("HERA_SESSIONS_DIR",
+                                        default="~/.config/hera/sessions"))
+CURRENT_SESSION = {"id": None, "created": None}
+
+
+def _now():
+    return time.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def new_session_id():
+    return time.strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}"
+
+
+def save_session(messages):
+    """Persist the conversation (skips trivial sessions). Best-effort."""
+    if not CURRENT_SESSION["id"] or len(messages) <= 1:
+        return
+    try:
+        os.makedirs(SESSIONS_DIR, exist_ok=True)
+        state = {
+            "id": CURRENT_SESSION["id"],
+            "created": CURRENT_SESSION["created"],
+            "updated": _now(),
+            "cwd": os.getcwd(),
+            "model": MODEL,
+            "tokens": dict(SESSION),
+            "messages": messages,
+        }
+        path = os.path.join(SESSIONS_DIR, CURRENT_SESSION["id"] + ".json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(state, f)
+    except OSError:
+        pass
+
+
+def list_sessions():
+    out = []
+    if not os.path.isdir(SESSIONS_DIR):
+        return out
+    for fn in os.listdir(SESSIONS_DIR):
+        if not fn.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(SESSIONS_DIR, fn), encoding="utf-8") as f:
+                out.append(json.load(f))
+        except (OSError, json.JSONDecodeError):
+            pass
+    out.sort(key=lambda s: s.get("updated", ""), reverse=True)
+    return out
+
+
+def load_session(sid):
+    """Resolve `sid` (exact id, prefix, or '__latest__') to a saved session."""
+    sessions = list_sessions()
+    if not sessions:
+        return None
+    if sid in ("__latest__", "", None):
+        return sessions[0]
+    for s in sessions:
+        if s.get("id") == sid:
+            return s
+    for s in sessions:
+        if s.get("id", "").startswith(sid):
+            return s
+    return None
+
+
+def _first_user(messages):
+    for m in messages:
+        if m.get("role") == "user":
+            return " ".join((m.get("content") or "").split())[:56]
+    return "(empty)"
+
+
+def print_sessions():
+    sessions = list_sessions()
+    if not sessions:
+        print(f"\n{DIM}no saved sessions in {SESSIONS_DIR}{R}\n")
+        return
+    print(f"\n{DIM}saved sessions (newest first) — resume with: hera --resume <id>{R}")
+    for s in sessions[:20]:
+        msgs = s.get("messages", [])
+        nturns = sum(1 for m in msgs if m.get("role") == "user")
+        print(f"  {BOLD}{s.get('id','?')}{R}  {DIM}{s.get('updated','?')}  "
+              f"{nturns} turn(s)  {s.get('tokens',{}).get('total',0)} tok  "
+              f"· {_first_user(msgs)}{R}")
+    print()
+
+
+# ── Extensions: MCP servers + custom tools ────────────────────────────────────
+MCP_CONFIG = os.path.expanduser(_env("HERA_MCP_CONFIG",
+                                     default="~/.config/hera/mcp.json"))
+CUSTOM_TOOLS_PATHS = [
+    os.path.expanduser("~/.config/hera/tools.py"),
+    os.path.join(os.getcwd(), ".hera", "tools.py"),
+]
+EXT_TOOLS = set()      # tool names added by extensions (require approval)
+_mcp_clients = []
+
+
+def _safe_tool_name(name):
+    name = re.sub(r"[^a-zA-Z0-9_-]", "_", name)
+    return name[:64]
+
+
+class McpClient:
+    """Minimal MCP stdio client (newline-delimited JSON-RPC 2.0)."""
+
+    def __init__(self, name, command, args=None, env=None):
+        self.name = name
+        full_env = dict(os.environ)
+        full_env.update(env or {})
+        self.proc = subprocess.Popen(
+            [command] + list(args or []),
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True, bufsize=1, env=full_env,
+        )
+        self._id = 0
+        self.tools = []
+        self._handshake()
+
+    def _send(self, obj):
+        self.proc.stdin.write(json.dumps(obj) + "\n")
+        self.proc.stdin.flush()
+
+    def _rpc(self, method, params=None, timeout=30):
+        self._id += 1
+        rid = self._id
+        self._send({"jsonrpc": "2.0", "id": rid, "method": method, "params": params or {}})
+        deadline = time.time() + timeout
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                raise TimeoutError(f"MCP '{self.name}' timed out on {method}")
+            ready, _, _ = select.select([self.proc.stdout], [], [], remaining)
+            if not ready:
+                raise TimeoutError(f"MCP '{self.name}' timed out on {method}")
+            line = self.proc.stdout.readline()
+            if not line:
+                raise RuntimeError(f"MCP '{self.name}' closed the connection")
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # skip non-JSON log noise on stdout
+            if msg.get("id") == rid:
+                if "error" in msg:
+                    raise RuntimeError(msg["error"].get("message", "MCP error"))
+                return msg.get("result", {})
+            # otherwise a notification / unrelated message → ignore
+
+    def _notify(self, method, params=None):
+        self._send({"jsonrpc": "2.0", "method": method, "params": params or {}})
+
+    def _handshake(self):
+        self._rpc("initialize", {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "hera", "version": "1"},
+        })
+        self._notify("notifications/initialized")
+        self.tools = self._rpc("tools/list").get("tools", [])
+
+    def call(self, tool, arguments):
+        res = self._rpc("tools/call", {"name": tool, "arguments": arguments or {}})
+        parts = []
+        for c in res.get("content", []):
+            parts.append(c.get("text", "") if c.get("type") == "text" else json.dumps(c))
+        text = "\n".join(p for p in parts if p) or "(no output)"
+        return ("[mcp error] " + text) if res.get("isError") else text
+
+    def close(self):
+        try:
+            self.proc.terminate()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _register_tool(name, description, parameters, func, read_only=False):
+    TOOLS[name] = func
+    TOOL_SCHEMAS.append({"type": "function", "function": {
+        "name": name, "description": description or name,
+        "parameters": parameters or {"type": "object", "properties": {}},
+    }})
+    EXT_TOOLS.add(name)
+    if not read_only:
+        SIDE_EFFECTS.add(name)
+
+
+def register_mcp():
+    if not os.path.isfile(MCP_CONFIG):
+        return []
+    try:
+        with open(MCP_CONFIG, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"{YELL}[mcp] bad config {MCP_CONFIG}: {exc}{R}", file=sys.stderr)
+        return []
+    servers = cfg.get("mcpServers", cfg if isinstance(cfg, dict) else {})
+    loaded = []
+    for sname, spec in servers.items():
+        if not isinstance(spec, dict) or "command" not in spec:
+            continue
+        try:
+            client = McpClient(sname, spec["command"], spec.get("args"), spec.get("env"))
+        except Exception as exc:  # noqa: BLE001
+            print(f"{YELL}[mcp] failed to start '{sname}': {exc}{R}", file=sys.stderr)
+            continue
+        _mcp_clients.append(client)
+        for t in client.tools:
+            full = _safe_tool_name(f"mcp__{sname}__{t['name']}")
+            run = (lambda cl, tn: (lambda **kw: cl.call(tn, kw)))(client, t["name"])
+            _register_tool(full, t.get("description", f"MCP tool {t['name']} ({sname})"),
+                           t.get("inputSchema"), run)
+            loaded.append(full)
+    return loaded
+
+
+def register_custom_tools():
+    loaded = []
+    for i, path in enumerate(CUSTOM_TOOLS_PATHS):
+        if not os.path.isfile(path):
+            continue
+        try:
+            spec = importlib.util.spec_from_file_location(f"hera_user_tools_{i}", path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+        except Exception as exc:  # noqa: BLE001
+            print(f"{YELL}[tools] failed to load {path}: {exc}{R}", file=sys.stderr)
+            continue
+        for t in getattr(mod, "HERA_TOOLS", []):
+            try:
+                _register_tool(_safe_tool_name(t["name"]), t.get("description", ""),
+                               t.get("parameters"), t["run"], t.get("read_only", False))
+                loaded.append(t["name"])
+            except (KeyError, TypeError):
+                pass
+    return loaded
+
+
+def register_extensions():
+    mcp = register_mcp()
+    custom = register_custom_tools()
+    if mcp:
+        print(f"{DIM}[ext] loaded {len(mcp)} MCP tool(s): {', '.join(mcp[:6])}"
+              f"{'…' if len(mcp) > 6 else ''}{R}")
+    if custom:
+        print(f"{DIM}[ext] loaded {len(custom)} custom tool(s): {', '.join(custom)}{R}")
+
+
+def close_extensions():
+    for c in _mcp_clients:
+        c.close()
+
+
 # ── Project context (Claude-Code-style) ───────────────────────────────────────
 CONTEXT_FILES = ("HERA.md", "AGENTS.md", "AGENT.md")
 
@@ -781,12 +1042,14 @@ def print_banner():
     row(f"sandbox →  {sandbox_label()[:W - 13]}", dim=True)
     if ALLOW_PATTERNS:
         row(f"allow   →  {len(ALLOW_PATTERNS)} pattern(s)", dim=True)
+    if EXT_TOOLS:
+        row(f"ext     →  {len(EXT_TOOLS)} mcp/custom tool(s)", dim=True)
     if fn:
         row(f"context →  {fn}", dim=True)
     print(f"{CYAN}│{R}{' ' * W}{CYAN}│{R}")
     row("tools: list_dir read_file glob search", dim=True)
     row("       write_file edit_file run_bash", dim=True)
-    row("/tokens /tools /allow /sandbox /clear /help", dim=True)
+    row("/tokens /tools /allow /sandbox /sessions /help", dim=True)
     print(f"{CYAN}╰{'─' * W}╯{R}\n")
 
 
@@ -800,27 +1063,81 @@ def print_help():
         f"  /tools      list the tools I can use\n"
         f"  /allow      list run_bash allow patterns (or: /allow <pattern>)\n"
         f"  /sandbox    show the run_bash sandbox status\n"
+        f"  /sessions   list saved sessions (resume with: hera --resume <id>)\n"
         f"  /reasoning  toggle streaming of my thinking\n"
         f"  /cwd        show the working directory\n"
-        f"  /clear      erase conversation and session approvals\n"
+        f"  /new        save current and start a fresh session\n"
+        f"  /clear      same as /new (fresh conversation)\n"
         f"  /help       show this message\n"
-        f"  /exit       quit  (Ctrl-C or Ctrl-D also work)\n"
+        f"  /exit       quit  (Ctrl-C or Ctrl-D also work)\n\n"
+        f"  start with --resume [ID] / --continue to pick up a past session,\n"
+        f"  or --list-sessions to see them.\n"
         f"{R}"
     )
 
 
 # ── REPL ──────────────────────────────────────────────────────────────────────
+def _start_new_session():
+    CURRENT_SESSION["id"] = new_session_id()
+    CURRENT_SESSION["created"] = _now()
+    for k in SESSION:
+        SESSION[k] = 0
+    return [{"role": "system", "content": system_prompt()}]
+
+
 def main():
     global HIDE_REASONING
+
+    ap = argparse.ArgumentParser(prog="hera", add_help=True,
+                                 description="Hera — agentic coding CLI")
+    ap.add_argument("--resume", "-r", nargs="?", const="__latest__", default=None,
+                    metavar="ID", help="resume a saved session (latest if no ID)")
+    ap.add_argument("--continue", "-c", dest="cont", action="store_true",
+                    help="continue the most recent session")
+    ap.add_argument("--list-sessions", "-l", action="store_true",
+                    help="list saved sessions and exit")
+    args = ap.parse_args()
+
+    if args.list_sessions:
+        print_sessions()
+        return
 
     if not API_KEY:
         print(f"{YELL}[warn] no API key set — the server will reject requests with 401.\n"
               f"       export HERA_API_KEY=<key> and re-run.{R}\n", file=sys.stderr)
 
-    print_banner()
-    spinner  = Spinner()
-    messages = [{"role": "system", "content": system_prompt()}]
+    register_extensions()
 
+    # Resume or start fresh.
+    resume_target = "__latest__" if args.cont else args.resume
+    messages = None
+    if resume_target is not None:
+        s = load_session(resume_target)
+        if s:
+            messages = s["messages"]
+            CURRENT_SESSION["id"] = s["id"]
+            CURRENT_SESSION["created"] = s.get("created")
+            SESSION.update(s.get("tokens", {}))
+            print(f"{DIM}resumed session {s['id']} "
+                  f"({sum(1 for m in messages if m.get('role') == 'user')} turns, "
+                  f"{SESSION.get('total', 0)} tokens){R}")
+        else:
+            print(f"{YELL}no matching session — starting fresh{R}")
+    if messages is None:
+        messages = _start_new_session()
+
+    print_banner()
+    spinner = Spinner()
+
+    try:
+        _repl(messages, spinner)
+    finally:
+        save_session(messages)
+        close_extensions()
+
+
+def _repl(messages, spinner):
+    global HIDE_REASONING
     while True:
         try:
             user_input = input(f"{GREEN}{BOLD}You:{R}  ").strip()
@@ -835,10 +1152,14 @@ def main():
         if cmd in ("/exit", "/quit"):
             print(f"{DIM}Session ended.{R}")
             break
-        if cmd == "/clear":
-            messages = [{"role": "system", "content": system_prompt()}]
+        if cmd in ("/clear", "/new"):
+            save_session(messages)
+            messages[:] = _start_new_session()
             _always_ok.clear()
-            print(f"\n{DIM}Conversation cleared.{R}\n")
+            print(f"\n{DIM}Started a fresh session ({CURRENT_SESSION['id']}).{R}\n")
+            continue
+        if cmd == "/sessions":
+            print_sessions()
             continue
         if cmd == "/help":
             print_help()
@@ -888,6 +1209,7 @@ def main():
             ok = True  # keep history; user can continue
         if not ok:
             messages.pop()  # roll back the failed user turn
+        save_session(messages)  # autosave after every turn
 
 
 if __name__ == "__main__":

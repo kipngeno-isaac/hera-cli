@@ -67,14 +67,55 @@ that edits files or runs a command (`[y]es / [a]lways / [n]o`). Read-only tools 
 | Command | Effect |
 |---|---|
 | `/tokens` | Show token usage this session |
-| `/tools` | List the tools Hera can use |
+| `/tools` | List the tools Hera can use (incl. MCP/custom) |
 | `/allow` | List `run_bash` allow patterns (or `/allow <pattern>` to add one) |
 | `/sandbox` | Show the `run_bash` sandbox status |
+| `/sessions` | List saved sessions |
 | `/reasoning` | Toggle streaming of the model's thinking |
 | `/cwd` | Show the working directory |
-| `/clear` | Erase conversation and session approvals |
+| `/new` | Save the current session and start a fresh one |
+| `/clear` | Same as `/new` |
 | `/help` | Show command list |
 | `/exit` | Quit (Ctrl-C / Ctrl-D also work) |
+
+## Sessions & resume
+
+Conversations auto-save under `~/.config/hera/sessions/` after every turn:
+
+```bash
+hera --continue        # resume the most recent session
+hera --resume <id>     # resume a specific session (id or prefix)
+hera --list-sessions   # list saved sessions
+```
+
+`/sessions` lists them in-session; `/new` saves the current one and starts fresh. Token totals
+are restored on resume.
+
+## Extending Hera — MCP & custom tools
+
+Hera is an **MCP client**. List MCP servers in `~/.config/hera/mcp.json` (Claude-Desktop shape);
+their tools appear as `mcp__<server>__<tool>`:
+
+```json
+{ "mcpServers": {
+    "filesystem": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path"] }
+} }
+```
+
+Or add **custom Python tools** at `~/.config/hera/tools.py` (global) or `.hera/tools.py`
+(per-project):
+
+```python
+def _reverse(text=""): return text[::-1]
+HERA_TOOLS = [{
+    "name": "reverse_text", "description": "Reverse a string",
+    "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
+    "run": _reverse, "read_only": True,   # read_only → no approval prompt
+}]
+```
+
+MCP and custom tools require approval unless `read_only`, and run **outside** the `run_bash`
+sandbox.
 
 ## Sandboxing & permissions
 
@@ -109,6 +150,8 @@ into its system prompt and follows its conventions — like Claude Code's `CLAUD
 | `HERA_SANDBOX_NET` | `0` | `1` = allow network inside the sandbox |
 | `HERA_ALLOW` | _(empty)_ | Comma-separated `run_bash` allow patterns (also reads `.heraallow`) |
 | `HERA_DENY` | _(empty)_ | Extra deny patterns (added to the built-in list) |
+| `HERA_SESSIONS_DIR` | `~/.config/hera/sessions` | Where session transcripts are saved |
+| `HERA_MCP_CONFIG` | `~/.config/hera/mcp.json` | MCP servers config (Claude-Desktop shape) |
 
 > Legacy `QWEN_*` variables (and `LLAMA_API_KEY`) are honoured as fallbacks.
 
