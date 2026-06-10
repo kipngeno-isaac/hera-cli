@@ -42,7 +42,26 @@ else
     fi
 fi
 
-# 3. download the agent
+# 3. sandbox hint: bubblewrap gives run_bash full filesystem confinement
+if command -v bwrap >/dev/null 2>&1; then
+    echo "✓ bubblewrap present — run_bash gets full filesystem confinement"
+else
+    echo "• bubblewrap (bwrap) not found — run_bash will fall back to a weaker"
+    echo "  sandbox (network/PID isolation, no filesystem confinement)."
+    if command -v apt-get >/dev/null 2>&1; then
+        echo "  for full confinement:  sudo apt-get install -y bubblewrap"
+    elif command -v dnf >/dev/null 2>&1; then
+        echo "  for full confinement:  sudo dnf install -y bubblewrap"
+    elif command -v pacman >/dev/null 2>&1; then
+        echo "  for full confinement:  sudo pacman -S bubblewrap"
+    elif command -v brew >/dev/null 2>&1; then
+        echo "  (macOS has no bubblewrap; run_bash uses the weaker fallback or HERA_SANDBOX=none)"
+    else
+        echo "  install your distro's 'bubblewrap' package for full confinement."
+    fi
+fi
+
+# 4. download the agent
 mkdir -p "$BIN_DIR"
 echo "• downloading hera…"
 curl -fsSL "$SERVER/hera.py" -o "$DEST"
