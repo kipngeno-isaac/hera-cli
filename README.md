@@ -7,6 +7,7 @@ it lists directories, finds and greps code, reads/writes/edits files, and runs s
 commands, streams the model's reasoning, and tracks token usage.
 
 > Single file, no framework. Requires Python 3.7+ and `requests`.
+> This repo is kept in sync from the gpustack stack; see `scripts/sync-hera-cli.sh` there.
 
 ---
 
