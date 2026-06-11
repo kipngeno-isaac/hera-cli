@@ -24,6 +24,7 @@ import ast
 import fnmatch
 import glob as globmod
 import hashlib
+import html as ihtml
 import importlib.util
 import json
 import math
@@ -35,6 +36,7 @@ import subprocess
 import sys
 import time
 import threading
+import urllib.parse as _urlparse
 
 try:
     import readline  # noqa: F401  (enables line editing in the input() fallback)
@@ -84,6 +86,17 @@ HIDE_REASONING = _truthy(_env("HERA_HIDE_REASONING", "QWEN_HIDE_REASONING"))
 
 MAX_TOOL_OUTPUT = 12000    # chars; tool results longer than this are truncated
 MAX_READ_BYTES  = 256_000  # cap read_file size
+
+# Web access: the model can search/fetch the live web when it lacks info.
+WEB_ENABLED = not _truthy(_env("HERA_NO_WEB"))      # on by default; HERA_NO_WEB=1 disables
+WEB_TIMEOUT = int(_env("HERA_WEB_TIMEOUT", default="20"))
+_WEB_UA = "Mozilla/5.0 (X11; Linux x86_64) HeraCLI/0.3"
+
+# Offer to install a missing program rather than just failing a run_bash call.
+AUTO_INSTALL = not _truthy(_env("HERA_NO_AUTOINSTALL"))
+# Commands whose package name differs from the binary name.
+_PKG_MAP = {"rg": "ripgrep", "fd": "fd-find", "http": "httpie", "pip": "python3-pip",
+            "pip3": "python3-pip", "convert": "imagemagick", "aws": "awscli"}
 
 # Sandboxing for run_bash. Modes: auto | bwrap | unshare | none
 SANDBOX_MODE = _env("HERA_SANDBOX", default="auto").lower()
@@ -564,7 +577,68 @@ def tool_edit_file(path, old_string, new_string, replace_all=False):
     return f"Edited {p} ({count} replacement{'s' if count != 1 else ''})"
 
 
-def tool_run_bash(command, timeout=120):
+def _missing_program(command, stderr, returncode):
+    """Detect a 'command not found' failure and return the missing binary name."""
+    if returncode != 127:
+        return None
+    m = (re.search(r"([\w.+-]+): (?:command )?not found", stderr or "")
+         or re.search(r"(?:command not found|not found): ([\w.+-]+)", stderr or ""))
+    if m:
+        return m.group(1)
+    toks = command.split()
+    return toks[0] if toks else None
+
+
+def _install_plan(program):
+    """Pick an install command for `program`, or None if no package manager fits."""
+    pkg = _PKG_MAP.get(program, program)
+    sudo = "" if getattr(os, "geteuid", lambda: 0)() == 0 else "sudo -n "
+    if shutil.which("apt-get"):
+        return f"{sudo}apt-get install -y {pkg}"
+    if shutil.which("dnf"):
+        return f"{sudo}dnf install -y {pkg}"
+    if shutil.which("pacman"):
+        return f"{sudo}pacman -S --noconfirm {pkg}"
+    if shutil.which("brew"):
+        return f"brew install {pkg}"
+    if shutil.which("apk"):
+        return f"{sudo}apk add {pkg}"
+    return None
+
+
+def _offer_install(program):
+    """Ask the user, then try to install `program`. Returns True on success."""
+    if not AUTO_INSTALL:
+        return False
+    plan = _install_plan(program)
+    if not plan:
+        return False
+    print(f"\n{YELL}{BOLD}⚠ '{program}' is not installed.{R}")
+    print(f"  {DIM}proposed:{R} {plan}")
+    if YOLO:
+        ans = "y"
+    else:
+        try:
+            ans = input(f"{BOLD}  install it now? [y]es / [n]o:{R} ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return False
+    if ans not in ("y", "yes", ""):
+        return False
+    print(f"  {DIM}installing… (this runs outside the sandbox, with network){R}")
+    # Install must reach the network and write system dirs, so it is NOT sandboxed.
+    proc = subprocess.run(plan, shell=True, capture_output=True, text=True)
+    if proc.returncode == 0 and shutil.which(program):
+        print(f"  {GREEN}✓ installed {program}{R}")
+        return True
+    detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+    hint = detail[-1] if detail else f"exit {proc.returncode}"
+    if "password" in (proc.stderr or "").lower():
+        hint = "needs sudo (no password available here) — install it manually"
+    print(f"  {RED}✗ install failed: {hint}{R}")
+    return False
+
+
+def tool_run_bash(command, timeout=120, _retry=False):
     argv, use_shell = _sandbox_argv(command)
     try:
         proc = subprocess.run(
@@ -577,6 +651,15 @@ def tool_run_bash(command, timeout=120):
         return f"[error] sandbox launch failed ({exc}); set HERA_SANDBOX=none to disable"
     out = proc.stdout or ""
     err = proc.stderr or ""
+
+    # A missing binary → offer to install it and retry once, instead of just
+    # handing the model a bare exit-127.
+    if not _retry:
+        prog = _missing_program(command, err, proc.returncode)
+        if prog and _offer_install(prog):
+            print(f"  {DIM}↳ re-running: {command}{R}")
+            return tool_run_bash(command, timeout, _retry=True)
+
     parts = []
     if out:
         parts.append(out.rstrip("\n"))
@@ -584,6 +667,63 @@ def tool_run_bash(command, timeout=120):
         parts.append(f"[stderr]\n{err.rstrip(chr(10))}")
     parts.append(f"[exit code {proc.returncode}]")
     return "\n".join(parts)
+
+
+# ── Web access (search + fetch) ───────────────────────────────────────────────
+def _html_text(s):
+    """Strip tags/entities from an HTML fragment and collapse whitespace."""
+    s = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", s)
+    s = re.sub(r"(?s)<[^>]+>", " ", s)
+    return re.sub(r"\s+", " ", ihtml.unescape(s)).strip()
+
+
+def _ddg_url(href):
+    """DuckDuckGo wraps result links in a redirect — unwrap to the real URL."""
+    if href.startswith("//"):
+        href = "https:" + href
+    parsed = _urlparse.urlparse(href)
+    if "duckduckgo.com" in parsed.netloc and parsed.path.startswith("/l/"):
+        q = _urlparse.parse_qs(parsed.query).get("uddg")
+        if q:
+            return _urlparse.unquote(q[0])
+    return href
+
+
+def tool_web_search(query, max_results=6):
+    """Search the web (DuckDuckGo) and return ranked title/url/snippet results."""
+    try:
+        resp = requests.post("https://html.duckduckgo.com/html/",
+                             data={"q": query}, headers={"User-Agent": _WEB_UA},
+                             timeout=WEB_TIMEOUT)
+        resp.raise_for_status()
+    except requests.exceptions.RequestException as exc:
+        return f"[error] web search failed: {exc}"
+    body = resp.text
+    titles = re.findall(r'class="result__a"[^>]*href="(.*?)"[^>]*>(.*?)</a>', body, re.S)
+    snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', body, re.S)
+    results = []
+    for i, (href, title) in enumerate(titles[:max_results]):
+        snip = _html_text(snippets[i]) if i < len(snippets) else ""
+        results.append(f"{i + 1}. {_html_text(title)}\n   {_ddg_url(href)}\n   {snip}")
+    if not results:
+        return "(no results found)"
+    return "\n".join(results)
+
+
+def tool_web_fetch(url, max_chars=6000):
+    """Fetch a web page and return its readable text content."""
+    if not re.match(r"https?://", url):
+        url = "https://" + url
+    try:
+        resp = requests.get(url, headers={"User-Agent": _WEB_UA},
+                            timeout=WEB_TIMEOUT)
+        resp.raise_for_status()
+    except requests.exceptions.RequestException as exc:
+        return f"[error] fetch failed: {exc}"
+    text = _html_text(resp.text)
+    if len(text) > max_chars:
+        text = text[:max_chars] + f"\n…[truncated, {len(text)} chars total]"
+    return f"{url}\n\n{text}"
 
 
 TOOLS = {
@@ -1066,6 +1206,33 @@ TOOL_SCHEMAS.append({"type": "function", "function": {
 }})
 
 
+# Web tools are read-only (no approval gate) so the model can look things up on
+# its own the moment it lacks information. Disable with HERA_NO_WEB=1.
+if WEB_ENABLED:
+    TOOLS["web_search"] = tool_web_search
+    TOOLS["web_fetch"] = tool_web_fetch
+    TOOL_SCHEMAS.append({"type": "function", "function": {
+        "name": "web_search",
+        "description": ("Search the live web and return ranked results (title, URL, "
+                        "snippet). Use this automatically whenever you lack the "
+                        "information to answer — e.g. current events, library/API "
+                        "docs, versions, error messages — instead of guessing."),
+        "parameters": {"type": "object", "properties": {
+            "query":       {"type": "string", "description": "Search query"},
+            "max_results": {"type": "integer", "description": "How many results (default 6)"},
+        }, "required": ["query"]},
+    }})
+    TOOL_SCHEMAS.append({"type": "function", "function": {
+        "name": "web_fetch",
+        "description": ("Fetch a web page (by URL, e.g. one returned by web_search) "
+                        "and return its readable text, so you can read docs or articles."),
+        "parameters": {"type": "object", "properties": {
+            "url":       {"type": "string", "description": "Page URL to fetch"},
+            "max_chars": {"type": "integer", "description": "Max characters to return (default 6000)"},
+        }, "required": ["url"]},
+    }})
+
+
 # ── Session persistence / resume ──────────────────────────────────────────────
 def _user_id():
     """Stable per-user id so sessions never mix on a shared machine.
@@ -1169,6 +1336,52 @@ def print_sessions():
               f"{nturns} turn(s)  {s.get('tokens',{}).get('total',0)} tok  "
               f"· {_first_user(msgs)}{R}")
     print()
+
+
+def _switch_to(messages, s):
+    """Load saved session `s` into the live `messages`, replacing the current one."""
+    save_session(messages)  # keep the current conversation before switching
+    messages[:] = s["messages"]
+    CURRENT_SESSION["id"] = s["id"]
+    CURRENT_SESSION["created"] = s.get("created")
+    SESSION.update(s.get("tokens", {}))
+    _always_ok.clear()
+    nturns = sum(1 for m in messages if m.get("role") == "user")
+    where = s.get("cwd", "")
+    print(f"\n{GREEN}resumed {s['id']}{R} {DIM}({nturns} turn(s), "
+          f"{SESSION.get('total', 0)} tok){R}")
+    if where and where != os.getcwd():
+        print(f"{DIM}note: this session was started in {_short(where)} — "
+              f"you're now in {_short(os.getcwd())}{R}")
+    print()
+
+
+def resume_picker(messages):
+    """Show recent sessions and let the user pick one to resume in place."""
+    sessions = list_sessions()
+    if not sessions:
+        print(f"\n{DIM}no saved sessions yet.{R}\n")
+        return
+    shown = sessions[:20]
+    print(f"\n{BOLD}Resume a session{R} {DIM}(newest first){R}")
+    for i, s in enumerate(shown, 1):
+        msgs = s.get("messages", [])
+        nturns = sum(1 for m in msgs if m.get("role") == "user")
+        print(f"  {ACCENT}{i:>2}{R}  {DIM}{s.get('updated','?')}{R}  "
+              f"{nturns} turn(s)  {DIM}{s.get('tokens',{}).get('total',0)} tok{R}\n"
+              f"      {_first_user(msgs)}")
+    try:
+        ans = input(f"\n{BOLD}  number to resume (Enter to cancel):{R} ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+    if not ans:
+        print(f"{DIM}cancelled.{R}\n")
+        return
+    if not ans.isdigit() or not (1 <= int(ans) <= len(shown)):
+        print(f"{DIM}'{ans}' is not one of 1–{len(shown)}.{R}\n")
+        return
+    _switch_to(messages, shown[int(ans) - 1])
 
 
 # ── Extensions: MCP servers + custom tools ────────────────────────────────────
@@ -1396,6 +1609,14 @@ def system_prompt():
         "Keep prose short — act with tools rather than describing what you would do. "
         "When the task is complete, give a brief summary of what you changed."
     )
+    if WEB_ENABLED:
+        base += (" When you lack information — current facts, library or API docs, exact "
+                 "versions, an unfamiliar error — call web_search on your own initiative "
+                 "(then web_fetch a result if you need its full text) rather than guessing.")
+    if AUTO_INSTALL:
+        base += (" If a shell command fails because a program isn't installed, just try it; "
+                 "the user will be asked whether to install the missing tool and the command "
+                 "is retried automatically — so don't give up on a 'command not found'.")
     fn, body = load_project_context()
     if body:
         base += (f"\n\nThe project provides a context file ({fn}). Follow its "
@@ -1517,6 +1738,7 @@ SLASH_COMMANDS = [
     ("/allow",     "[pattern]", "list run_bash allow patterns, or add one"),
     ("/sandbox",   "",          "show the run_bash sandbox status"),
     ("/sessions",  "",          "list saved sessions"),
+    ("/resume",    "[id]",      "pick a past session to resume in place"),
     ("/reasoning", "",          "toggle streaming of my thinking"),
     ("/cwd",       "",          "show the working directory"),
     ("/new",       "",          "save current and start a fresh session"),
@@ -2160,6 +2382,17 @@ def _repl(messages, spinner):
             continue
         if cmd == "/sessions":
             print_sessions()
+            continue
+        if cmd in ("/resume", "/history"):
+            resume_picker(messages)
+            continue
+        if cmd.startswith("/resume "):
+            sid = user_input[8:].strip()
+            s = load_session(sid)
+            if s:
+                _switch_to(messages, s)
+            else:
+                print(f"\n{DIM}no session matching {sid!r}. try /resume to pick from a list.{R}\n")
             continue
         if cmd == "/undo":
             print(f"\n{DIM}{undo_last()}{R}\n")

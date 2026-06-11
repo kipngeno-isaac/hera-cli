@@ -90,8 +90,15 @@ that edits files or runs a command (`[y]es / [a]lways / [n]o`). Read-only tools 
 | `semantic_search` | Embedding-ranked code search (only if an embeddings endpoint is reachable) | auto |
 | `write_file` | Create / overwrite a file | prompts |
 | `edit_file` | Exact string replacement in a file | prompts |
-| `run_bash` | Run a shell command | prompts |
+| `run_bash` | Run a shell command (offers to install a missing program, then retries) | prompts |
+| `web_search` | Search the live web when Hera lacks info (auto-triggered) | auto |
+| `web_fetch` | Fetch a page's readable text (e.g. a docs URL) | auto |
 | `task` | Delegate a subtask to a focused sub-agent (own tool loop) | runs (inner calls prompt) |
+
+Web tools let Hera look things up on its own when it's missing information; disable with
+`HERA_NO_WEB=1`. When a `run_bash` command hits a missing binary, Hera asks whether to
+install it (apt/dnf/pacman/brew/apk) and re-runs the command — disable with `HERA_NO_AUTOINSTALL=1`.
+Pick `[a]lways` at a `write_file` prompt and Hera creates files on its own for the rest of the session.
 
 ## In-session commands
 
@@ -105,6 +112,7 @@ that edits files or runs a command (`[y]es / [a]lways / [n]o`). Read-only tools 
 | `/allow` | List `run_bash` allow patterns (or `/allow <pattern>` to add one) |
 | `/sandbox` | Show the `run_bash` sandbox status |
 | `/sessions` | List saved sessions |
+| `/resume` | Pick a past session from a list and resume it in place (`/resume <id>` to jump straight to one) |
 | `/reasoning` | Toggle streaming of the model's thinking |
 | `/cwd` | Show the working directory |
 | `/new` | Save the current session and start a fresh one |
@@ -125,7 +133,8 @@ hera --resume <id>     # resume a specific session (id or prefix)
 hera --list-sessions   # list saved sessions
 ```
 
-`/sessions` lists them in-session; `/new` saves the current one and starts fresh. Token totals
+`/sessions` lists them in-session and `/resume` lets you pick one to jump back into without
+leaving Hera; `/new` saves the current one and starts fresh. Token totals
 are restored on resume.
 
 ## Extending Hera — MCP & custom tools
