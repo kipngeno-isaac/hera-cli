@@ -114,6 +114,7 @@ def save_config(updates):
         pass
 
 
+VERSION = "0.4.0"   # bump on every released change; mirrored in cli/VERSION
 NAME    = _env("HERA_NAME", default="Hera")
 # No server host is baked into the source (so this repo can be public, revealing
 # neither key nor host). Each user supplies the endpoint + key once — via env
@@ -131,7 +132,7 @@ MAX_READ_BYTES  = 256_000  # cap read_file size
 # Web access: the model can search/fetch the live web when it lacks info.
 WEB_ENABLED = not _truthy(_env("HERA_NO_WEB"))      # on by default; HERA_NO_WEB=1 disables
 WEB_TIMEOUT = int(_env("HERA_WEB_TIMEOUT", default="20"))
-_WEB_UA = "Mozilla/5.0 (X11; Linux x86_64) HeraCLI/0.3"
+_WEB_UA = f"Mozilla/5.0 (X11; Linux x86_64) HeraCLI/{VERSION}"
 
 # Offer to install a missing program rather than just failing a run_bash call.
 AUTO_INSTALL = not _truthy(_env("HERA_NO_AUTOINSTALL"))
@@ -1845,7 +1846,7 @@ def compact_history(messages):
 
 
 # ── Banner / help ──────────────────────────────────────────────────────────────
-VERSION = "0.3"
+# (VERSION is defined once near the top of the file.)
 
 _WORDMARK = [
     "█  █  ████  ███    ██ ",
@@ -2487,6 +2488,55 @@ def _start_new_session():
     return [{"role": "system", "content": system_prompt()}]
 
 
+def _parse_ver(s):
+    """'0.4.0' -> (0, 4, 0); non-numeric parts -> 0. Safe for comparison."""
+    parts = []
+    for p in str(s).strip().split("."):
+        m = re.match(r"\d+", p)
+        parts.append(int(m.group()) if m else 0)
+    return tuple(parts) or (0,)
+
+
+def _update_source():
+    """Where to fetch the latest version string. Configurable; defaults to the
+    public GitHub copy that both download paths are published from."""
+    return _cfg("HERA_UPDATE_URL", key="update_url",
+                default="https://raw.githubusercontent.com/jones0011738/hera-cli/main/VERSION")
+
+
+def check_for_update():
+    """Print a one-line notice if a newer version is published. Throttled to
+    once/day and fail-silent — never blocks startup or errors out.
+
+    A previously-seen newer version is remembered in the config, so the notice
+    keeps showing on every launch until the user actually updates.
+    """
+    if _truthy(_env("HERA_NO_UPDATE_CHECK")):
+        return
+    now = int(time.time())
+    latest = _FILE_CFG.get("latest_known_version", "")
+    last   = int(_FILE_CFG.get("last_update_check", 0) or 0)
+
+    if now - last >= 86400:  # at most once per day
+        try:
+            r = requests.get(_update_source(), timeout=2,
+                             headers={"User-Agent": _WEB_UA})
+            if r.ok:
+                remote = r.text.strip().split()[0][:20]
+                if remote:
+                    latest = remote
+            save_config({"latest_known_version": latest, "last_update_check": str(now)})
+        except (requests.exceptions.RequestException, IndexError):
+            save_config({"last_update_check": str(now)})  # back off even on failure
+
+    if latest and _parse_ver(latest) > _parse_ver(VERSION):
+        how = "re-run the installer, or:  curl -fsSL %s -o \"$(command -v hera || echo ~/.local/bin/hera)\"" % (
+            _cfg("HERA_DOWNLOAD_URL", key="download_url",
+                 default="https://raw.githubusercontent.com/jones0011738/hera-cli/main/hera.py"))
+        print(f"{YELL}↑ update available: {NAME} {latest}{R} {DIM}(you have {VERSION}){R}\n"
+              f"  {DIM}{how}{R}\n")
+
+
 def onboard():
     """First-run setup: if the endpoint/key are missing, capture them once and
     persist to the config file so the user never has to export env vars.
@@ -2542,6 +2592,7 @@ def main():
                     help="list saved sessions and exit")
     ap.add_argument("--serve", action="store_true",
                     help="headless JSON mode over stdin/stdout (used by the VS Code extension)")
+    ap.add_argument("--version", "-V", action="version", version=f"{NAME} {VERSION}")
     args = ap.parse_args()
 
     if args.serve:
@@ -2553,6 +2604,7 @@ def main():
         return
 
     onboard()
+    check_for_update()  # one-line notice if a newer version is published (fail-silent)
     if not API_URL:
         print(f"{RED}[error] no endpoint set. Run `hera` interactively to set it, or:\n"
               f"  export HERA_API_URL=http://<host>:8090/v1   # the identity proxy\n"
