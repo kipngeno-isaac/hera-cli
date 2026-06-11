@@ -42,48 +42,46 @@ Make sure `~/.local/bin` is on your `PATH`.
 
 > Optional: install `bubblewrap` (`sudo apt install bubblewrap`) for full `run_bash` sandboxing.
 
-### Then point it at your server (required — nothing is baked into the code)
+### Easiest — the server's installer (endpoint is pre-configured)
 
-```bash
-# 1) set them for THIS shell (edit the three values)
-export HERA_API_URL=http://<HOST>:8090/v1      # the identity proxy (admin gives you <HOST>)
-export HERA_API_KEY=sk-...                     # your Open WebUI API key
-export HERA_USER=you@example.com               # keeps your sessions separate
-
-# 2) persist for future shells (captures what you set above) and reload now
-cat >> ~/.bashrc <<EOF
-export HERA_API_URL=$HERA_API_URL
-export HERA_API_KEY=$HERA_API_KEY
-export HERA_USER=$HERA_USER
-EOF
-source ~/.bashrc                                # zsh: use ~/.zshrc instead
-
-hera
-```
-
-`export` only lasts for the current shell, so the `cat >> ~/.bashrc … && source` step is what
-makes a fresh terminal work too (otherwise `hera` greets you with `no server set`).
-
-That's why this repo can be public: it ships **no key and no host** — you supply both. See
-[`ACCESS_CLI.md`](ACCESS_CLI.md) for the full walkthrough.
-
-### Alternative — from the server's installer endpoint
-
-If your admin runs the download server, the one-liner installer also works (it adds `requests`,
-drops `hera` on your `PATH`, and nudges you to install bubblewrap):
+If your admin runs the download server, the one-liner installer fetches `hera`, adds `requests`,
+puts it on your `PATH`, **and saves the endpoint** so you only ever paste your key:
 
 ```bash
 HERA_SERVER=http://<HOST>:8081 bash <(curl -fsSL http://<HOST>:8081/install.sh)
+hera        # first run: paste your Open WebUI API key once — done
 ```
+
+### Then point it at your server (only if you installed manually)
+
+First run is interactive — Hera asks for the endpoint (the identity proxy, `http://<HOST>:8090/v1`)
+and your key, then saves both to `~/.config/hera/config.json` (mode 600) so it never asks again.
+To skip the prompt, write the file yourself:
+
+```bash
+mkdir -p ~/.config/hera
+printf '{ "api_url": "http://<HOST>:8090/v1" }\n' > ~/.config/hera/config.json
+hera        # paste your key once
+```
+
+Environment variables still work and **override** the file (handy for CI):
+
+```bash
+export HERA_API_URL=http://<HOST>:8090/v1   # the identity proxy
+export HERA_API_KEY=sk-...                  # your Open WebUI API key
+export HERA_USER=you@example.com            # optional: labels your sessions
+```
+
+That's why this repo can be public: it ships **no key and no host** — you supply both, once. See
+[`ACCESS_CLI.md`](ACCESS_CLI.md) for the full walkthrough.
 
 ---
 
 ## Run
 
 ```bash
-export HERA_API_KEY=<key>     # bearer key the server enforces
 cd ~/my-project               # Hera works in the current directory
-hera
+hera                          # uses your saved config (or env vars)
 ```
 
 Type a request in plain language. Hera uses its tools, pausing for approval before anything

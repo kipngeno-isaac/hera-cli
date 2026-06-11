@@ -12,11 +12,15 @@ use for the Hera CLI and the VS Code extension.
 
 ## 1. Get access
 
-Open signup is **disabled** — an admin must create or approve your account.
+Anyone can **sign up**, but a new account is **`pending`** until an admin approves it — you
+can't chat or use the API until then.
 
-1. Ask the admin to add you (they set your email + an initial password, or approve a pending
-   request).
-2. Go to **`http://<HOST>:3000`** and **sign in** with your email.
+1. Go to **`http://<HOST>:3000`** → **Sign up** with your name, email, and a password.
+2. You'll see a "pending activation" screen. Ask the admin to approve you.
+3. Once approved, **sign in** and start chatting.
+
+> Prefer the admin to create your account directly? They still can (Admin Panel → Users) — either
+> way you end up with the same email login.
 
 Your chats are private to your account; nothing is shared with other users.
 
@@ -54,12 +58,14 @@ the identity proxy `http://<HOST>:8090/v1`. Same login, same identity, isolated 
 You decide who gets in and manage accounts from the **Admin Panel** (your avatar → **Admin
 Panel**).
 
-- **Add / approve users:** *Admin Panel → Users*. New people can't self-register
-  (`ENABLE_SIGNUP=false`); create them here, or approve anyone whose role is `pending` by
-  setting it to `user`. Only `user`/`admin` roles can use the API (the identity proxy rejects
-  `pending`).
-- **API keys feature:** already enabled (*Admin Panel → Settings → General → API keys*). This is
-  what lets approved users mint the personal keys used by the CLI/extension.
+- **Approve users:** *Admin Panel → Users*. Anyone can self-register (`ENABLE_SIGNUP=true`), but
+  new accounts default to **`pending`** (`DEFAULT_USER_ROLE=pending`) and can't do anything until
+  you set their role to `user`. You can also add users manually here. Only `user`/`admin` roles
+  can use the API (the identity proxy rejects `pending`).
+- **API keys feature:** enabled, and the **`user` role permission for API keys is on** (*Admin
+  Panel → Settings → Users → Permissions → Features → API Keys*) so approved users can actually
+  mint the personal keys used by the CLI/extension. (Without that permission the API Keys section
+  is hidden for non-admins even though the feature is enabled.)
 - **Remove access:** set a user's role to `pending` or delete them — that immediately blocks both
   their web login and their CLI/extension access (the proxy revalidates against this account).
 - **Model wiring:** Open WebUI talks to the inference server via `OPENAI_API_BASE_URL` /
@@ -71,7 +77,7 @@ Panel**).
 
 | Symptom | Fix |
 |---|---|
-| Can't sign up | Expected — signup is disabled. Ask the admin to create your account. |
+| Signed up but can't chat | Expected — your account is `pending`. Ask the admin to approve you (set role to `user`). |
 | No model in the selector | The inference server may be reloading; try again shortly, or tell the admin to check `qwen-server`. |
 | "Account is not approved" from the CLI | Your role is `pending`; ask the admin to set it to `user`. |
 | Lost your API key | Recreate it in Settings → Account → API keys (the old one stops working). |

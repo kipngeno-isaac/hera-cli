@@ -74,12 +74,53 @@ def _truthy(v):
     return v not in ("", "0", "false", "False", "no", "off")
 
 
+# Persistent on-disk config so a user only ever pastes their key once. The
+# installer writes the endpoint here; first run captures the key (see
+# onboard()). Env vars always win over the file.
+CONFIG_PATH = os.path.expanduser(_env("HERA_CONFIG", default="~/.config/hera/config.json"))
+
+
+def _load_config_file():
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+_FILE_CFG = _load_config_file()
+
+
+def _cfg(*env_names, key=None, default=""):
+    """Env var (first non-empty) → config file[key] → default."""
+    v = _env(*env_names)
+    if v:
+        return v
+    if key and _FILE_CFG.get(key):
+        return _FILE_CFG[key]
+    return default
+
+
+def save_config(updates):
+    """Merge `updates` into the on-disk config (0600). Best-effort."""
+    _FILE_CFG.update({k: v for k, v in updates.items() if v})
+    try:
+        os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(_FILE_CFG, f, indent=2)
+        os.chmod(CONFIG_PATH, 0o600)
+    except OSError:
+        pass
+
+
 NAME    = _env("HERA_NAME", default="Hera")
-# No server host is baked in (so this repo can be public, revealing neither key
-# nor host). Each user supplies HERA_API_URL + HERA_API_KEY (given on approval).
-API_URL = _env("HERA_API_URL", "QWEN_API_URL", default="").rstrip("/")
+# No server host is baked into the source (so this repo can be public, revealing
+# neither key nor host). Each user supplies the endpoint + key once — via env
+# vars, the installer-written config file, or the first-run paste prompt.
+API_URL = _cfg("HERA_API_URL", "QWEN_API_URL", key="api_url", default="").rstrip("/")
 MODEL   = _env("HERA_MODEL",   "QWEN_MODEL",   default="qwen3.6-35b-a3b")
-API_KEY = _env("HERA_API_KEY", "QWEN_API_KEY", "LLAMA_API_KEY", default="")
+API_KEY = _cfg("HERA_API_KEY", "QWEN_API_KEY", "LLAMA_API_KEY", key="api_key", default="")
 YOLO    = _truthy(_env("HERA_YOLO", "QWEN_YOLO"))
 MAX_STEPS      = int(_env("HERA_MAX_STEPS", "QWEN_MAX_STEPS", default="25"))
 HIDE_REASONING = _truthy(_env("HERA_HIDE_REASONING", "QWEN_HIDE_REASONING"))
@@ -952,36 +993,55 @@ def stream_turn(messages, spinner, tools=None):
 
     Returns dict {content, finish_reason, tool_calls, usage} or None on error.
     """
-    try:
-        resp = requests.post(
-            f"{API_URL}/chat/completions",
-            json={
-                "model": MODEL,
-                "messages": messages,
-                "tools": tools if tools is not None else TOOL_SCHEMAS,
-                "tool_choice": "auto",
-                "stream": True,
-                "stream_options": {"include_usage": True},
-            },
-            headers={
-                "Authorization": f"Bearer {API_KEY}",
-                "Content-Type": "application/json",
-            },
-            stream=True,
-            timeout=600,
-        )
-        resp.raise_for_status()
-    except requests.exceptions.ConnectionError:
+    # Transient blips (server busy under --parallel load, a dropped connection)
+    # return 5xx/connection errors. Retry a few times with backoff before giving
+    # up, so one hiccup doesn't end the turn.
+    resp = None
+    last_err = None
+    for attempt in range(3):
+        try:
+            resp = requests.post(
+                f"{API_URL}/chat/completions",
+                json={
+                    "model": MODEL,
+                    "messages": messages,
+                    "tools": tools if tools is not None else TOOL_SCHEMAS,
+                    "tool_choice": "auto",
+                    "stream": True,
+                    "stream_options": {"include_usage": True},
+                },
+                headers={
+                    "Authorization": f"Bearer {API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                stream=True,
+                timeout=600,
+            )
+            resp.raise_for_status()
+            break
+        except requests.exceptions.HTTPError as exc:
+            last_err = exc
+            code = exc.response.status_code if exc.response is not None else 0
+            if code and code < 500:
+                spinner.stop()  # 4xx (401/403/400) won't fix itself — don't retry
+                print(f"{RED}[error] {exc}{R}\n", file=sys.stderr)
+                return None
+        except requests.exceptions.ConnectionError as exc:
+            last_err = exc
+        except requests.exceptions.Timeout as exc:
+            last_err = exc
+        if attempt < 2:
+            time.sleep(1.5 * (attempt + 1))  # 1.5s, 3s
+
+    if resp is None:
         spinner.stop()
-        print(f"{RED}[error] Cannot reach {API_URL}{R}\n", file=sys.stderr)
-        return None
-    except requests.exceptions.HTTPError as exc:
-        spinner.stop()
-        print(f"{RED}[error] {exc}{R}\n", file=sys.stderr)
-        return None
-    except requests.exceptions.Timeout:
-        spinner.stop()
-        print(f"{RED}[error] Request timed out{R}\n", file=sys.stderr)
+        if isinstance(last_err, requests.exceptions.ConnectionError):
+            print(f"{RED}[error] Cannot reach {API_URL}{R}\n", file=sys.stderr)
+        elif isinstance(last_err, requests.exceptions.Timeout):
+            print(f"{RED}[error] Request timed out{R}\n", file=sys.stderr)
+        else:
+            print(f"{RED}[error] {last_err} (server kept failing after retries){R}\n",
+                  file=sys.stderr)
         return None
 
     content       = []
@@ -1138,7 +1198,7 @@ def run_agent(messages, spinner):
         if calls:
             assistant_msg["tool_calls"] = [
                 {"id": c["id"], "type": "function",
-                 "function": {"name": c["name"], "arguments": c["arguments"]}}
+                 "function": {"name": c["name"], "arguments": _normalize_tool_args(c["arguments"])}}
                 for c in calls
             ]
         messages.append(assistant_msg)
@@ -1154,6 +1214,38 @@ def run_agent(messages, spinner):
 
     print(f"\n{RED}[stopped] hit MAX_STEPS={MAX_STEPS} tool round-trips{R}\n")
     return True
+
+
+def _normalize_tool_args(raw):
+    """Return a JSON-object string that is always safe to store in the history.
+
+    The model occasionally streams empty or malformed `arguments` (e.g. a
+    write_file call with no body). Storing that raw string poisons the
+    conversation: llama.cpp's chat template can't re-render it, so *every*
+    later request 500s and the session is wedged forever. Coerce to valid
+    JSON — keep it if it parses to an object, otherwise drop to `{}`.
+    """
+    try:
+        parsed = json.loads(raw or "{}")
+        if isinstance(parsed, dict):
+            return json.dumps(parsed)
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return "{}"
+
+
+def _sanitize_history(messages):
+    """Heal a (possibly already-poisoned) message list in place.
+
+    Normalizes every assistant tool_call's arguments so a session saved before
+    this fix — or resumed from disk — can't keep 500-ing on load.
+    """
+    for m in messages:
+        for tc in (m.get("tool_calls") or []):
+            fn = tc.get("function")
+            if isinstance(fn, dict):
+                fn["arguments"] = _normalize_tool_args(fn.get("arguments"))
+    return messages
 
 
 def _exec_call(c, indent=""):
@@ -1223,7 +1315,8 @@ def run_subagent(description):
         am = {"role": "assistant", "content": res["content"] or ""}
         if calls:
             am["tool_calls"] = [{"id": c["id"], "type": "function",
-                                 "function": {"name": c["name"], "arguments": c["arguments"]}}
+                                 "function": {"name": c["name"],
+                                              "arguments": _normalize_tool_args(c["arguments"])}}
                                 for c in calls]
         msgs.append(am)
         if not calls:
@@ -1306,7 +1399,7 @@ def _user_id():
 
     Uses HERA_USER (e.g. the user's email) if set, else a hash of the API key
     (each Open WebUI user has their own key → their own session store)."""
-    u = _env("HERA_USER")
+    u = _cfg("HERA_USER", key="user")
     if u:
         return re.sub(r"[^A-Za-z0-9._@-]", "_", u)[:64]
     if API_KEY:
@@ -1372,15 +1465,24 @@ def load_session(sid):
     sessions = list_sessions()
     if not sessions:
         return None
+    chosen = None
     if sid in ("__latest__", "", None):
-        return sessions[0]
-    for s in sessions:
-        if s.get("id") == sid:
-            return s
-    for s in sessions:
-        if s.get("id", "").startswith(sid):
-            return s
-    return None
+        chosen = sessions[0]
+    else:
+        for s in sessions:
+            if s.get("id") == sid:
+                chosen = s
+                break
+        if chosen is None:
+            for s in sessions:
+                if s.get("id", "").startswith(sid):
+                    chosen = s
+                    break
+    if chosen is not None:
+        # Heal any malformed tool_calls saved before the normalization fix,
+        # so resuming an old session can't 500 on the first request.
+        _sanitize_history(chosen.get("messages") or [])
+    return chosen
 
 
 def _first_user(messages):
@@ -2321,7 +2423,8 @@ def _serve_run(messages):
         am = {"role": "assistant", "content": res["content"] or ""}
         if calls:
             am["tool_calls"] = [{"id": x["id"], "type": "function",
-                                 "function": {"name": x["name"], "arguments": x["arguments"]}}
+                                 "function": {"name": x["name"],
+                                              "arguments": _normalize_tool_args(x["arguments"])}}
                                 for x in calls]
         messages.append(am)
         if not calls:
@@ -2384,6 +2487,48 @@ def _start_new_session():
     return [{"role": "system", "content": system_prompt()}]
 
 
+def onboard():
+    """First-run setup: if the endpoint/key are missing, capture them once and
+    persist to the config file so the user never has to export env vars.
+
+    The installer pre-writes `api_url`, so in the normal flow the user only
+    pastes their key. Env vars still override everything.
+    """
+    global API_URL, API_KEY
+    if API_URL and API_KEY:
+        return True
+    if not sys.stdin.isatty():
+        return bool(API_URL and API_KEY)  # non-interactive: let caller's guards report
+
+    print(f"\n{ACCENT}▌{R} {BOLD}Welcome to {NAME}{R}  {GREY}· one-time setup{R}\n")
+
+    if not API_URL:
+        print(f"{DIM}Your endpoint is the identity proxy, e.g. http://<host>:8090/v1{R}")
+        try:
+            url = input(f"{BOLD}  Endpoint URL: {R}").strip().rstrip("/")
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return False
+        if not url:
+            return False
+        API_URL = url
+
+    if not API_KEY:
+        print(f"\n{DIM}Your personal API key from Open WebUI → Settings → Account → API Keys.{R}")
+        try:
+            key = input(f"{BOLD}  Paste your API key: {R}").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return False
+        if not key:
+            return False
+        API_KEY = key
+
+    save_config({"api_url": API_URL, "api_key": API_KEY})
+    print(f"\n{GREEN}✓ saved to {CONFIG_PATH}{R} {DIM}— you're set; this won't ask again.{R}\n")
+    return True
+
+
 def main():
     global HIDE_REASONING
 
@@ -2407,14 +2552,16 @@ def main():
         print_sessions()
         return
 
+    onboard()
     if not API_URL:
-        print(f"{RED}[error] no server set. Export HERA_API_URL (and HERA_API_KEY), e.g.:\n"
-              f"  export HERA_API_URL=http://<host>:3000/api   # your Open WebUI endpoint\n"
+        print(f"{RED}[error] no endpoint set. Run `hera` interactively to set it, or:\n"
+              f"  export HERA_API_URL=http://<host>:8090/v1   # the identity proxy\n"
               f"  export HERA_API_KEY=<your personal key>{R}", file=sys.stderr)
         return
     if not API_KEY:
         print(f"{YELL}[warn] no API key set — the server will reject requests with 401.\n"
-              f"       export HERA_API_KEY=<key> and re-run.{R}\n", file=sys.stderr)
+              f"       run `hera` interactively to paste your key, or export HERA_API_KEY.{R}\n",
+              file=sys.stderr)
 
     register_extensions()
     setup_completion()  # Tab-completion + recommendations for slash commands
@@ -2552,6 +2699,7 @@ def _repl(messages, spinner):
         content, attached = expand_mentions(user_input)
         if attached:
             print(f"{DIM}  ↳ attached: {', '.join(attached)}{R}")
+        mark = len(messages)  # remember where this turn starts
         messages.append({"role": "user", "content": content})
         try:
             ok = run_agent(messages, spinner)
@@ -2560,7 +2708,10 @@ def _repl(messages, spinner):
             print(f"\n{DIM}(interrupted){R}\n")
             ok = True  # keep history; user can continue
         if not ok:
-            messages.pop()  # roll back the failed user turn
+            # Roll back the ENTIRE failed turn (user msg + any partial
+            # assistant/tool msgs), so a transport error can't leave the
+            # history in a state that breaks every subsequent request.
+            del messages[mark:]
         save_session(messages)  # autosave after every turn
 
 

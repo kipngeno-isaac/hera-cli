@@ -73,6 +73,26 @@ curl -fsSL "$SERVER/hera.py" -o "$DEST"
 chmod +x "$DEST"
 echo "✓ installed: $DEST"
 
+# 5. pre-write the endpoint into the config file so the user only pastes a key.
+#    The proxy (identity endpoint) is the download host with port 8090.
+#    HERA_API_URL overrides the derived value if the admin sets it explicitly.
+API_URL="${HERA_API_URL:-}"
+if [ -z "$API_URL" ]; then
+    host_only="${SERVER#http://}"; host_only="${host_only#https://}"; host_only="${host_only%%:*}"
+    host_only="${host_only%%/*}"
+    API_URL="http://${host_only}:8090/v1"
+fi
+CONFIG_DIR="${HERA_CONFIG_DIR:-$HOME/.config/hera}"
+CONFIG_FILE="$CONFIG_DIR/config.json"
+mkdir -p "$CONFIG_DIR"
+if [ -f "$CONFIG_FILE" ] && grep -q '"api_key"' "$CONFIG_FILE" 2>/dev/null; then
+    echo "✓ existing config kept: $CONFIG_FILE"
+else
+    printf '{\n  "api_url": "%s"\n}\n' "$API_URL" > "$CONFIG_FILE"
+    chmod 600 "$CONFIG_FILE"
+    echo "✓ endpoint saved: $API_URL  ($CONFIG_FILE)"
+fi
+
 # PATH hint
 case ":$PATH:" in
     *":$BIN_DIR:"*) ;;
@@ -85,18 +105,14 @@ esac
 
 cat <<EOF
 
-Done. Set your endpoint + personal key (from your Open WebUI account), then run:
+Done. The endpoint is already configured. Just run:
 
-  1. Set them for this shell (edit the values):
-       export HERA_API_URL=http://<host>:8090/v1     # the identity proxy
-       export HERA_API_KEY=<your personal API key>   # Open WebUI → Settings → Account → API keys
-       export HERA_USER=<your-email>                 # optional: keeps your sessions separate
-
-  2. Persist them so new terminals work too (captures what you set above), and reload:
-       printf 'export HERA_API_URL=%s\nexport HERA_API_KEY=%s\nexport HERA_USER=%s\n' \\
-         "\$HERA_API_URL" "\$HERA_API_KEY" "\$HERA_USER" >> ~/.bashrc && source ~/.bashrc
-
-  3. cd into your project, then run:
        hera
+
+On first launch it will ask you to paste your personal API key once
+(Open WebUI → Settings → Account → API Keys). After that it never asks again.
+
+  Optional: to keep sessions labelled by who you are, run once:
+       hera   # then your key; or set HERA_USER=<your-email> in ~/.bashrc
 
 EOF
