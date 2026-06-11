@@ -37,8 +37,28 @@ One line does everything — checks Python, installs `requests`, downloads `hera
 HERA_SERVER=http://<HOST>:8081 bash <(curl -fsSL http://<HOST>:8081/install.sh)
 ```
 
+You'll see (verified output):
+
+```
+Hera CLI installer
+  download from : http://<HOST>:8081/hera.py
+  install to    : ~/.local/bin/hera
+
+✓ python3: Python 3.10.12
+✓ requests already installed
+✓ bubblewrap present — run_bash gets full filesystem confinement
+• downloading hera…
+✓ installed: ~/.local/bin/hera
+✓ endpoint saved: http://<HOST>:8090/v1  (~/.config/hera/config.json)
+
+Done. The endpoint is already configured. Just run:
+
+       hera
+```
+
 That's the whole install. Skip to step 3 — you do **not** also need the `pip`/`curl`/`chmod`
-steps below; the installer already did them.
+steps below; the installer already did them. (If `~/.local/bin` isn't on your `PATH`, the
+installer prints the one line to add it.)
 
 <details>
 <summary><b>Manual fallback</b> (offline, Windows, or no download server)</summary>
@@ -72,22 +92,24 @@ hera
 ```
 
 On first launch Hera asks you to **paste your API key** once, saves it to
-`~/.config/hera/config.json` (mode 600), and never asks again:
+`~/.config/hera/config.json` (mode 600), and never asks again (verified output):
 
 ```
 ▌ Welcome to Hera  · one-time setup
 
-  Paste your API key: sk-………
-✓ saved to ~/.config/hera/config.json — you're set; this won't ask again.
-```
+  Your personal API key from Open WebUI → Settings → Account → API Keys.
+  Paste your API key: sk-…………………
 
-```
+✓ saved to ~/.config/hera/config.json — you're set; this won't ask again.
 ✓ signed in as you@example.com — sessions are labelled by your account.
 ```
 
-**Your key is your identity.** Hera asks the proxy which account the key belongs to and labels
-your sessions by that email automatically — there's nothing else to set. The same config also
-powers the VS Code extension.
+…then the banner appears and you're at the prompt.
+
+**Your key is your identity.** Right after you paste it, Hera asks the proxy's `/whoami` which
+account the key belongs to and labels your sessions by that email automatically (`"user"` is
+written into your config) — there's nothing else to set. The same config also powers the VS Code
+extension.
 
 > **Installed manually (raw GitHub), so no endpoint is saved yet?** Hera will ask for the
 > endpoint too on first run (it's the identity proxy, `http://<HOST>:8090/v1`). Or set it once:
@@ -159,8 +181,9 @@ Read-only tools never prompt. `HERA_YOLO=1` auto-approves everything (sandbox/th
 ### Sessions & resume
 
 Conversations auto-save under `~/.config/hera/sessions/<you>/`. Resume with
-`hera --continue`, `hera --resume <id>`, or `hera --list-sessions`. Because the store is
-namespaced by `HERA_USER` (or a hash of your key), users never share context on one machine.
+`hera --continue`, `hera --resume <id>`, or `hera --list-sessions`. The store is namespaced by
+the account email your key resolves to (or `HERA_USER` if set, or a hash of the key before any
+email is known), so users never share context on one machine.
 
 ### Sandboxing & permissions
 

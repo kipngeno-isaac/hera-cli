@@ -20,12 +20,12 @@ the same `hera` CLI under the hood — one agent, just a graphical surface.
    HERA_SERVER=http://<HOST>:8081 bash <(curl -fsSL http://<HOST>:8081/install.sh)
    ```
    (Or set `hera.command` in the extension settings to an absolute path.)
-3. **Credentials the extension can see.** It needs `HERA_API_URL` + `HERA_API_KEY`. Two ways:
-   - **If you launch VS Code/Cursor from a terminal** that has them (you did the
-     `~/.bashrc` + `source` step in [`ACCESS_CLI.md`](ACCESS_CLI.md)), the extension inherits them.
-   - **If you launch from the GUI** (dock / Start menu), the app does **not** read `~/.bashrc`, so
-     set them in the extension settings instead — `hera.serverUrl`, `hera.apiKey` (and optionally
-     `hera.extraEnv` for `HERA_USER`). This is the reliable option.
+3. **Credentials.** Easiest: **run `hera` once in a terminal and paste your key** (see
+   [`ACCESS_CLI.md`](ACCESS_CLI.md)). That saves `~/.config/hera/config.json` (endpoint + key +
+   your resolved account email), and `hera --serve` — what the extension drives — reads that file
+   automatically, so the extension just works with no settings.
+   - Prefer to keep it all in the editor? Set `hera.serverUrl` + `hera.apiKey` in the extension
+     settings instead (below). These override the config file.
 4. **`bubblewrap`** (optional, recommended) for full shell sandboxing.
 
 ---
@@ -58,14 +58,16 @@ Open **Settings → Extensions → Hera** (or edit `settings.json`):
   "hera.command": "hera",
   "hera.serverUrl": "http://<HOST>:8090/v1",
   "hera.apiKey": "sk-your-open-webui-key",
-  "hera.extraEnv": { "HERA_USER": "you@example.com" },
   "hera.showDiffs": true
 }
 ```
 
+- All of these are **optional if you've already run `hera` once** — the saved config supplies them.
 - `hera.serverUrl` → the **identity proxy** (`:8090/v1`).
-- `hera.apiKey` → your personal Open WebUI key (or leave blank to use your shell's `HERA_API_KEY`).
-- `hera.extraEnv` → any extra env (e.g. `HERA_USER`, `HERA_YOLO`, `HERA_EMBED_URL`).
+- `hera.apiKey` → your personal Open WebUI key (or leave blank to use the saved config / your
+  shell's `HERA_API_KEY`).
+- Your key is your identity — sessions are labelled by the account it resolves to, so there's no
+  `HERA_USER` to set. Use `hera.extraEnv` only for extras like `HERA_YOLO` or `HERA_EMBED_URL`.
 
 ---
 
