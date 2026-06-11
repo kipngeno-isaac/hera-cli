@@ -123,6 +123,10 @@ Pick `[a]lways` at a `write_file` prompt and Hera creates files on its own for t
 | `/help` | Show command list |
 | `/exit` | Quit (Ctrl-C / Ctrl-D also work) |
 
+Press **`/`** at the prompt to open a live command menu (Claude-Code style): it filters as you
+type, `↑`/`↓` move the highlight, `Tab`/`Enter` accept, `Esc` dismisses; a bare `/` also lists
+everything.
+
 Reference files with **`@path`** to attach their contents. Every `write_file`/`edit_file` is
 checkpointed, so **`/undo`** rolls back the last one.
 
