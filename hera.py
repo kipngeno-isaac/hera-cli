@@ -1492,33 +1492,113 @@ def print_banner():
     row("tools", f"{len(TOOLS)} available")
     print(rule)
     print(f"  {DIM}type a task  ·  {R}{CYAN}@path{R}{DIM} to attach a file  ·  "
-          f"{R}{CYAN}/help{R}{DIM} for commands{R}\n")
+          f"{R}{CYAN}/{R}{DIM} + {R}{CYAN}Tab{R}{DIM} for commands{R}\n")
+
+
+# ── Slash commands ────────────────────────────────────────────────────────────
+# Single source of truth for the REPL's "/" commands. Drives Tab-completion,
+# the pop-up recommendation menu, and /help so the three never drift apart.
+# Each entry: (name, args-hint, one-line description).
+SLASH_COMMANDS = [
+    ("/help",      "",          "show this list of commands"),
+    ("/undo",      "",          "revert the last file write/edit I made"),
+    ("/diff",      "",          "show the working-tree git diff"),
+    ("/compact",   "",          "summarize the conversation to free up context"),
+    ("/tokens",    "",          "show token usage this session"),
+    ("/tools",     "",          "list the tools I can use"),
+    ("/allow",     "[pattern]", "list run_bash allow patterns, or add one"),
+    ("/sandbox",   "",          "show the run_bash sandbox status"),
+    ("/sessions",  "",          "list saved sessions"),
+    ("/reasoning", "",          "toggle streaming of my thinking"),
+    ("/cwd",       "",          "show the working directory"),
+    ("/new",       "",          "save current and start a fresh session"),
+    ("/clear",     "",          "same as /new (fresh conversation)"),
+    ("/exit",      "",          "quit  (Ctrl-C or Ctrl-D also work)"),
+]
+_SLASH_HELP = {name: (args, desc) for name, args, desc in SLASH_COMMANDS}
+
+
+def _slash_row(name, args, desc):
+    label = f"{name} {args}".rstrip()
+    return f"  {CYAN}{label:<24}{R}{DIM}{desc}{R}"
+
+
+def print_slash_menu(typed=""):
+    """Print the available slash commands, Claude-Code style.
+
+    Filters by what the user has typed so far; a bare "/" lists everything.
+    Used as the fallback when someone sends a line that starts with "/" but
+    isn't a recognized command.
+    """
+    prefix = (typed.split() or ["/"])[0].lower()
+    matches = [c for c in SLASH_COMMANDS if c[0].startswith(prefix)]
+    if typed and prefix != "/" and not matches:
+        print(f"\n{DIM}unknown command {prefix!r}. available commands:{R}")
+        matches = SLASH_COMMANDS
+    else:
+        print()
+    for name, args, desc in matches:
+        print(_slash_row(name, args, desc))
+    print(f"\n  {DIM}type {R}{CYAN}/{R}{DIM} then {R}{CYAN}Tab{R}{DIM} to autocomplete{R}\n")
+
+
+# ── Tab-completion for slash commands ─────────────────────────────────────────
+def _slash_completer(text, state):
+    """readline completer: completes "/..." against SLASH_COMMANDS."""
+    if not text.startswith("/"):
+        return None
+    matches = [name + " " for name, *_ in SLASH_COMMANDS if name.startswith(text.lower())]
+    return matches[state] if state < len(matches) else None
+
+
+def _slash_display(substitution, matches, longest):
+    """Show each completion with its description rather than a bare grid."""
+    print()
+    for m in matches:
+        name = m.strip()
+        args, desc = _SLASH_HELP.get(name, ("", ""))
+        print(_slash_row(name, args, desc))
+    try:
+        readline.redisplay()
+    except Exception:
+        pass
+
+
+def setup_completion():
+    """Wire up Tab-completion of slash commands in the interactive REPL."""
+    try:
+        import readline
+    except ImportError:
+        return
+    readline.set_completer(_slash_completer)
+    # Keep the whole "/word" as one token (the default delims split on "/").
+    readline.set_completer_delims(" \t\n")
+    try:
+        readline.set_completion_display_matches_hook(_slash_display)
+    except (AttributeError, NotImplementedError):
+        pass
+    if "libedit" in (getattr(readline, "__doc__", "") or ""):
+        readline.parse_and_bind("bind ^I rl_complete")
+    else:
+        readline.parse_and_bind("tab: complete")
+        # Single Tab lists everything — no "display all 14 possibilities? (y/n)".
+        readline.parse_and_bind("set show-all-if-ambiguous on")
+        readline.parse_and_bind("set completion-query-items 200")
 
 
 def print_help():
-    print(
-        f"\n{DIM}"
-        f"  Ask me to build, fix, explain, or refactor code. I work in the\n"
-        f"  current directory and ask before editing files or running shell\n"
-        f"  commands (unless HERA_YOLO=1). Reference files with @path to attach them.\n\n"
-        f"  /undo       revert the last file write/edit I made\n"
-        f"  /diff       show the working-tree git diff\n"
-        f"  /compact    summarize the conversation to free up context\n"
-        f"  /tokens     show token usage this session\n"
-        f"  /tools      list the tools I can use\n"
-        f"  /allow      list run_bash allow patterns (or: /allow <pattern>)\n"
-        f"  /sandbox    show the run_bash sandbox status\n"
-        f"  /sessions   list saved sessions (resume with: hera --resume <id>)\n"
-        f"  /reasoning  toggle streaming of my thinking\n"
-        f"  /cwd        show the working directory\n"
-        f"  /new        save current and start a fresh session\n"
-        f"  /clear      same as /new (fresh conversation)\n"
-        f"  /help       show this message\n"
-        f"  /exit       quit  (Ctrl-C or Ctrl-D also work)\n\n"
-        f"  start with --resume [ID] / --continue to pick up a past session,\n"
-        f"  or --list-sessions to see them.\n"
-        f"{R}"
-    )
+    print(f"\n{DIM}"
+          f"  Ask me to build, fix, explain, or refactor code. I work in the\n"
+          f"  current directory and ask before editing files or running shell\n"
+          f"  commands (unless HERA_YOLO=1). Reference files with @path to attach them."
+          f"{R}\n")
+    for name, args, desc in SLASH_COMMANDS:
+        print(_slash_row(name, args, desc))
+    print(f"\n{DIM}"
+          f"  Tip: type {R}{CYAN}/{R}{DIM} then {R}{CYAN}Tab{R}{DIM} to autocomplete a command,\n"
+          f"  or send a bare {R}{CYAN}/{R}{DIM} to see this list.\n\n"
+          f"  Start with --resume [ID] / --continue to pick up a past session,\n"
+          f"  or --list-sessions to see them.{R}\n")
 
 
 # ── Headless JSON mode (for the VS Code webview) ──────────────────────────────
@@ -1767,6 +1847,7 @@ def main():
               f"       export HERA_API_KEY=<key> and re-run.{R}\n", file=sys.stderr)
 
     register_extensions()
+    setup_completion()  # Tab-completion + recommendations for slash commands
 
     # Resume or start fresh.
     resume_target = "__latest__" if args.cont else args.resume
@@ -1877,6 +1958,14 @@ def _repl(messages, spinner):
             HIDE_REASONING = not HIDE_REASONING
             state = "hidden" if HIDE_REASONING else "visible"
             print(f"\n{DIM}reasoning is now {state}.{R}\n")
+            continue
+
+        # Anything else that looks like a "/command" (and not a path like
+        # /etc/hosts) is an unknown command — show the recommendation menu
+        # instead of forwarding it to the model.
+        first = user_input.split()[0]
+        if re.fullmatch(r"/[A-Za-z][A-Za-z-]*", first):
+            print_slash_menu(user_input)
             continue
 
         content, attached = expand_mentions(user_input)
