@@ -26,11 +26,24 @@ from everyone else's.
 
 ---
 
-## 2. Install
+## 2. Install — one command
 
-**Requirements:** Python 3.7+ and the `requests` library — `hera.py` is one file, no other deps.
+**Requirements:** Python 3.7+ (the installer adds the only dependency, `requests`).
 
-### Easiest — straight from the public GitHub repo
+One line does everything — checks Python, installs `requests`, downloads `hera` onto your
+`PATH`, **and pre-configures the endpoint** so the only thing left is pasting your key:
+
+```bash
+HERA_SERVER=http://<HOST>:8081 bash <(curl -fsSL http://<HOST>:8081/install.sh)
+```
+
+That's the whole install. Skip to step 3 — you do **not** also need the `pip`/`curl`/`chmod`
+steps below; the installer already did them.
+
+<details>
+<summary><b>Manual fallback</b> (offline, Windows, or no download server)</summary>
+
+`hera.py` is a single file with one dependency. Grab it straight from the public GitHub repo:
 
 ```bash
 pip install requests
@@ -40,20 +53,12 @@ chmod +x ~/.local/bin/hera
 
 Or clone it: `git clone https://github.com/jones0011738/hera-cli`. Ensure `~/.local/bin` is on
 your `PATH`. Optionally install `bubblewrap` (`sudo apt install bubblewrap`) for full sandboxing.
+The repo ships **no key and no host** (that's why it can be public) — so installed this way Hera
+also asks for the endpoint on first run (the identity proxy, `http://<HOST>:8090/v1`).
 
-> The repo ships **no key and no host** — that's why it can be public. You supply both in step 3.
-
-### Alternative — the server's installer one-liner
-
-If your admin runs the download server, this fetches `hera.py`, adds `requests`, and puts `hera`
-on your `PATH`:
-
-```bash
-HERA_SERVER=http://<HOST>:8081 bash <(curl -fsSL http://<HOST>:8081/install.sh)
-```
-
-(Windows: install Python, `pip install requests`, download `hera.py` from the GitHub raw URL
-above, run `python hera.py` — set the step-3 env vars in PowerShell with `$env:`.)
+Windows: install Python, `pip install requests`, download `hera.py` from the raw URL above, then
+`python hera.py`.
+</details>
 
 ---
 
@@ -76,7 +81,13 @@ On first launch Hera asks you to **paste your API key** once, saves it to
 ✓ saved to ~/.config/hera/config.json — you're set; this won't ask again.
 ```
 
-That's it — the same config also powers the VS Code extension automatically.
+```
+✓ signed in as you@example.com — sessions are labelled by your account.
+```
+
+**Your key is your identity.** Hera asks the proxy which account the key belongs to and labels
+your sessions by that email automatically — there's nothing else to set. The same config also
+powers the VS Code extension.
 
 > **Installed manually (raw GitHub), so no endpoint is saved yet?** Hera will ask for the
 > endpoint too on first run (it's the identity proxy, `http://<HOST>:8090/v1`). Or set it once:
@@ -90,7 +101,7 @@ That's it — the same config also powers the VS Code extension automatically.
 > ```bash
 > export HERA_API_URL=http://<HOST>:8090/v1   # identity proxy
 > export HERA_API_KEY=sk-...                  # your Open WebUI API key
-> export HERA_USER=you@example.com            # optional: labels your sessions
+> # HERA_USER is optional — only to force a label; normally the key resolves it.
 > ```
 
 The proxy checks your key against Open WebUI (must be an **approved**, non-`pending` account),
@@ -172,7 +183,7 @@ A `HERA.md` (or `AGENTS.md`/`AGENT.md`) in the launch directory is loaded into t
 |---|---|---|
 | `HERA_API_URL` | _(required)_ | Endpoint — the identity proxy `http://<HOST>:8090/v1`. |
 | `HERA_API_KEY` | _(required)_ | Your Open WebUI API key. Missing/invalid → `401`. |
-| `HERA_USER` | _(key hash)_ | Identity for per-user session isolation (e.g. your email). |
+| `HERA_USER` | _(resolved from key)_ | Override the session label. Normally unset — the key's account email is fetched from the proxy automatically. |
 | `HERA_MODEL` | `qwen3.6-35b-a3b` | Model name. |
 | `HERA_YOLO` | `0` | `1` = auto-approve every tool call. Sandbox only. |
 | `HERA_MAX_STEPS` | `25` | Max tool round-trips per message. |

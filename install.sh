@@ -114,7 +114,7 @@ Done. The endpoint is already configured. Just run:
 On first launch it will ask you to paste your personal API key once
 (Open WebUI → Settings → Account → API Keys). After that it never asks again.
 
-  Optional: to keep sessions labelled by who you are, run once:
-       hera   # then your key; or set HERA_USER=<your-email> in ~/.bashrc
+Your API key is your identity: Hera looks up the account it belongs to and
+labels your sessions by it automatically — nothing else to set.
 
 EOF

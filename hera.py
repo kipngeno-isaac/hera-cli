@@ -114,7 +114,7 @@ def save_config(updates):
         pass
 
 
-VERSION = "0.4.0"   # bump on every released change; mirrored in cli/VERSION
+VERSION = "0.5.0"   # bump on every released change; mirrored in cli/VERSION
 NAME    = _env("HERA_NAME", default="Hera")
 # No server host is baked into the source (so this repo can be public, revealing
 # neither key nor host). Each user supplies the endpoint + key once — via env
@@ -1395,11 +1395,13 @@ if AUTO_INSTALL:
 
 
 # ── Session persistence / resume ──────────────────────────────────────────────
-def _user_id():
+def _compute_user_id():
     """Stable per-user id so sessions never mix on a shared machine.
 
-    Uses HERA_USER (e.g. the user's email) if set, else a hash of the API key
-    (each Open WebUI user has their own key → their own session store)."""
+    Identity comes from the API key: resolve_identity() asks the proxy who the
+    key belongs to and caches the account email as `user`, so the key alone
+    labels your sessions. HERA_USER still overrides; before any email is known
+    we fall back to a hash of the key (each Open WebUI user has their own key)."""
     u = _cfg("HERA_USER", key="user")
     if u:
         return re.sub(r"[^A-Za-z0-9._@-]", "_", u)[:64]
@@ -1408,10 +1410,50 @@ def _user_id():
     return "default"
 
 
-USER_ID = _user_id()
-SESSIONS_DIR = os.path.join(
-    os.path.expanduser(_env("HERA_SESSIONS_DIR", default="~/.config/hera/sessions")),
-    USER_ID)
+def _sessions_dir_for(uid):
+    return os.path.join(
+        os.path.expanduser(_env("HERA_SESSIONS_DIR", default="~/.config/hera/sessions")),
+        uid)
+
+
+USER_ID = _compute_user_id()
+SESSIONS_DIR = _sessions_dir_for(USER_ID)
+
+
+def _whoami_url():
+    """The proxy's identity endpoint, derived from the API URL (strip /v1)."""
+    base = API_URL[:-3] if API_URL.endswith("/v1") else API_URL
+    return base.rstrip("/") + "/whoami"
+
+
+def resolve_identity():
+    """Make the API key *be* the identity: ask the proxy who this key belongs to
+    and cache the account email, so sessions are labelled by the real user with
+    no HERA_USER to set. Idempotent and fail-silent — falls back to the key hash
+    if the proxy is old or unreachable. Returns the known/resolved email."""
+    global USER_ID, SESSIONS_DIR
+    known = _env("HERA_USER") or _FILE_CFG.get("user")
+    if known:
+        return known
+    if not (API_URL and API_KEY):
+        return ""
+    try:
+        r = requests.get(_whoami_url(), timeout=4,
+                         headers={"Authorization": f"Bearer {API_KEY}",
+                                  "User-Agent": _WEB_UA})
+        if r.ok:
+            email = ((r.json() or {}).get("email") or "").strip()
+            if email:
+                save_config({"user": email})
+                USER_ID = _compute_user_id()
+                SESSIONS_DIR = _sessions_dir_for(USER_ID)
+                if sys.stdin.isatty():
+                    print(f"{GREEN}✓ signed in as {email}{R} "
+                          f"{DIM}— sessions are labelled by your account.{R}")
+                return email
+    except (requests.exceptions.RequestException, ValueError):
+        pass
+    return ""
 CURRENT_SESSION = {"id": None, "created": None}
 
 
@@ -2444,6 +2486,7 @@ def serve_main():
     if not API_URL:
         _emit({"type": "error", "message": "no server set — set HERA_API_URL"})
         return
+    resolve_identity()  # label sessions by the key's account email (fail-silent)
     # Reactive missing-binary installs ask via the editor, not a terminal prompt.
     _INSTALL_APPROVER = _serve_install_approver
     register_extensions(quiet=True)
@@ -2600,10 +2643,12 @@ def main():
         return
 
     if args.list_sessions:
+        resolve_identity()
         print_sessions()
         return
 
     onboard()
+    resolve_identity()  # key → account email, so sessions are labelled by who you are
     check_for_update()  # one-line notice if a newer version is published (fail-silent)
     if not API_URL:
         print(f"{RED}[error] no endpoint set. Run `hera` interactively to set it, or:\n"

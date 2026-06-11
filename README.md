@@ -26,10 +26,24 @@ Full guides: [`ACCESS_CLI.md`](ACCESS_CLI.md) · [`ACCESS_VSCODE.md`](ACCESS_VSC
 
 ## Install
 
-**Requirements:** Python 3.7+ and the `requests` library. That's it — `hera.py` is a single
-file with no other dependencies.
+**Requirements:** Python 3.7+ (the installer adds the only dependency, `requests`).
 
-### Easiest — straight from this public GitHub repo
+### One command — the server's installer
+
+The one-liner does everything: fetches `hera`, adds `requests`, puts it on your `PATH`, **and
+saves the endpoint** so the only thing left is pasting your key:
+
+```bash
+HERA_SERVER=http://<HOST>:8081 bash <(curl -fsSL http://<HOST>:8081/install.sh)
+hera        # first run: paste your Open WebUI API key once — done
+```
+
+That's the whole install — you don't also need the manual steps below.
+
+<details>
+<summary><b>Manual fallback</b> — straight from this public GitHub repo (no download server)</summary>
+
+`hera.py` is a single file with one dependency:
 
 ```bash
 pip install requests
@@ -38,25 +52,11 @@ chmod +x ~/.local/bin/hera
 ```
 
 (Or `git clone https://github.com/jones0011738/hera-cli && chmod +x hera-cli/hera.py`.)
-Make sure `~/.local/bin` is on your `PATH`.
+Make sure `~/.local/bin` is on your `PATH`. Optionally install `bubblewrap`
+(`sudo apt install bubblewrap`) for full `run_bash` sandboxing.
 
-> Optional: install `bubblewrap` (`sudo apt install bubblewrap`) for full `run_bash` sandboxing.
-
-### Easiest — the server's installer (endpoint is pre-configured)
-
-If your admin runs the download server, the one-liner installer fetches `hera`, adds `requests`,
-puts it on your `PATH`, **and saves the endpoint** so you only ever paste your key:
-
-```bash
-HERA_SERVER=http://<HOST>:8081 bash <(curl -fsSL http://<HOST>:8081/install.sh)
-hera        # first run: paste your Open WebUI API key once — done
-```
-
-### Then point it at your server (only if you installed manually)
-
-First run is interactive — Hera asks for the endpoint (the identity proxy, `http://<HOST>:8090/v1`)
-and your key, then saves both to `~/.config/hera/config.json` (mode 600) so it never asks again.
-To skip the prompt, write the file yourself:
+Installed this way, no endpoint is saved yet, so first run also asks for it (the identity proxy,
+`http://<HOST>:8090/v1`). To skip that prompt, write the file yourself:
 
 ```bash
 mkdir -p ~/.config/hera
@@ -69,10 +69,13 @@ Environment variables still work and **override** the file (handy for CI):
 ```bash
 export HERA_API_URL=http://<HOST>:8090/v1   # the identity proxy
 export HERA_API_KEY=sk-...                  # your Open WebUI API key
-export HERA_USER=you@example.com            # optional: labels your sessions
+# HERA_USER is optional — the key's account email is resolved automatically.
 ```
+</details>
 
-That's why this repo can be public: it ships **no key and no host** — you supply both, once. See
+**Your key is your identity:** on first run Hera asks the proxy which account the key belongs to
+and labels your sessions by that email — nothing else to set. This repo ships **no key and no
+host** (that's why it can be public) — you supply both, once. See
 [`ACCESS_CLI.md`](ACCESS_CLI.md) for the full walkthrough.
 
 ---
@@ -211,7 +214,7 @@ into its system prompt and follows its conventions — like Claude Code's `CLAUD
 |---|---|---|
 | `HERA_API_URL` | _(required)_ | Endpoint, e.g. `http://<host>:8080/v1` (given to you on approval). No host is baked into the code. |
 | `HERA_API_KEY` | _(empty)_ | **Required** bearer key. Missing → `401`. |
-| `HERA_USER` | _(key hash)_ | Identity for per-user session isolation (e.g. your email). |
+| `HERA_USER` | _(resolved from key)_ | Override the session label. Normally unset — the key's account email is fetched from the proxy automatically. |
 | `HERA_MODEL` | `qwen3.6-35b-a3b` | Model name sent to the API |
 | `HERA_NAME` | `Hera` | Assistant display name |
 | `HERA_YOLO` | `0` | `1` = auto-approve every tool call (sandbox only) |
