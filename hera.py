@@ -632,8 +632,8 @@ def _offer_install(program):
     plan = _install_plan(program)
     if not plan:
         return False
-    print(f"\n{YELL}{BOLD}⚠ '{program}' is not installed.{R}")
-    print(f"  {DIM}proposed:{R} {plan}")
+    print(f"\n{YELL}{BOLD}⚠ '{program}' is not installed.{R}", file=sys.stderr)
+    print(f"  {DIM}proposed:{R} {plan}", file=sys.stderr)
     if YOLO:
         ans = "y"
     else:
@@ -643,9 +643,10 @@ def _offer_install(program):
             return False
     if ans not in ("y", "yes", ""):
         return False
-    print(f"  {DIM}installing… (this runs outside the sandbox, with network){R}")
+    print(f"  {DIM}installing… (this runs outside the sandbox, with network){R}",
+          file=sys.stderr)
     ok, msg = _do_install(program)
-    print(f"  {GREEN}✓ {msg}{R}" if ok else f"  {RED}✗ {msg}{R}")
+    print(f"  {GREEN}✓ {msg}{R}" if ok else f"  {RED}✗ {msg}{R}", file=sys.stderr)
     return ok
 
 
@@ -658,7 +659,10 @@ def tool_install(program, reason=""):
     existing = shutil.which(program)
     if existing:
         return f"{program} is already installed ({existing})"
-    print(f"  {DIM}installing {program}… (outside the sandbox, with network){R}")
+    # Progress goes to stderr so it never pollutes the --serve JSON stdout stream;
+    # stderr is still shown in the terminal REPL.
+    print(f"  {DIM}installing {program}… (outside the sandbox, with network){R}",
+          file=sys.stderr)
     ok, msg = _do_install(program)
     return msg if ok else f"[error] {msg}"
 
