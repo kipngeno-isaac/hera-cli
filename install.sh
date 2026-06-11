@@ -87,11 +87,16 @@ cat <<EOF
 
 Done. Set your endpoint + personal key (from your Open WebUI account), then run:
 
-  1. export HERA_API_URL=http://<host>:3000/api    # your Open WebUI endpoint
-     export HERA_API_KEY=<your personal API key>   # Open WebUI → Settings → Account → API keys
-     export HERA_USER=<your-email>                 # optional: keeps your sessions separate
+  1. Set them for this shell (edit the values):
+       export HERA_API_URL=http://<host>:8090/v1     # the identity proxy
+       export HERA_API_KEY=<your personal API key>   # Open WebUI → Settings → Account → API keys
+       export HERA_USER=<your-email>                 # optional: keeps your sessions separate
 
-  2. cd into your project, then run:
+  2. Persist them so new terminals work too (captures what you set above), and reload:
+       printf 'export HERA_API_URL=%s\nexport HERA_API_KEY=%s\nexport HERA_USER=%s\n' \\
+         "\$HERA_API_URL" "\$HERA_API_KEY" "\$HERA_USER" >> ~/.bashrc && source ~/.bashrc
+
+  3. cd into your project, then run:
        hera
 
 EOF

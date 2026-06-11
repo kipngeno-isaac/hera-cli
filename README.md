@@ -45,11 +45,24 @@ Make sure `~/.local/bin` is on your `PATH`.
 ### Then point it at your server (required — nothing is baked into the code)
 
 ```bash
+# 1) set them for THIS shell (edit the three values)
 export HERA_API_URL=http://<HOST>:8090/v1      # the identity proxy (admin gives you <HOST>)
 export HERA_API_KEY=sk-...                     # your Open WebUI API key
 export HERA_USER=you@example.com               # keeps your sessions separate
+
+# 2) persist for future shells (captures what you set above) and reload now
+cat >> ~/.bashrc <<EOF
+export HERA_API_URL=$HERA_API_URL
+export HERA_API_KEY=$HERA_API_KEY
+export HERA_USER=$HERA_USER
+EOF
+source ~/.bashrc                                # zsh: use ~/.zshrc instead
+
 hera
 ```
+
+`export` only lasts for the current shell, so the `cat >> ~/.bashrc … && source` step is what
+makes a fresh terminal work too (otherwise `hera` greets you with `no server set`).
 
 That's why this repo can be public: it ships **no key and no host** — you supply both. See
 [`ACCESS_CLI.md`](ACCESS_CLI.md) for the full walkthrough.

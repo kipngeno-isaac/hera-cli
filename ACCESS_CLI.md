@@ -62,16 +62,29 @@ above, run `python hera.py` — set the step-3 env vars in PowerShell with `$env
 Point Hera at the **identity proxy** (port 8090) with your personal key:
 
 ```bash
+# 1) set them for THIS shell (edit the three values)
 export HERA_API_URL=http://<HOST>:8090/v1      # the identity proxy (validates your key)
 export HERA_API_KEY=sk-...                     # your Open WebUI API key
 export HERA_USER=you@example.com               # keeps your sessions separate
+
+# 2) persist them for future shells (captures what you just set) and reload now
+cat >> ~/.bashrc <<EOF
+export HERA_API_URL=$HERA_API_URL
+export HERA_API_KEY=$HERA_API_KEY
+export HERA_USER=$HERA_USER
+EOF
+source ~/.bashrc                                # zsh: use ~/.zshrc instead
+
 cd ~/my-project                                # Hera works in the current directory
 hera
 ```
 
-Add those `export` lines to your `~/.bashrc` to persist them. The proxy checks your key against
-Open WebUI (must be an approved account), then forwards to the model — so you never handle a
-shared server key, and usage is attributed to you.
+> **Why the `source`?** `export` only lasts for the current shell, so a new terminal would
+> forget your settings and `hera` would fail with `no server set`. Appending to `~/.bashrc` and
+> `source`-ing it makes the values stick **and** applies them right now.
+
+The proxy checks your key against Open WebUI (must be an approved account), then forwards to the
+model — so you never handle a shared server key, and usage is attributed to you.
 
 > **No host or key is baked into the code** — that's why this CLI can live in a public repo and
 > still work: you supply `HERA_API_URL` + `HERA_API_KEY`.

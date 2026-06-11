@@ -20,7 +20,13 @@ the same `hera` CLI under the hood — one agent, just a graphical surface.
    HERA_SERVER=http://<HOST>:8081 bash <(curl -fsSL http://<HOST>:8081/install.sh)
    ```
    (Or set `hera.command` in the extension settings to an absolute path.)
-3. **`bubblewrap`** (optional, recommended) for full shell sandboxing.
+3. **Credentials the extension can see.** It needs `HERA_API_URL` + `HERA_API_KEY`. Two ways:
+   - **If you launch VS Code/Cursor from a terminal** that has them (you did the
+     `~/.bashrc` + `source` step in [`ACCESS_CLI.md`](ACCESS_CLI.md)), the extension inherits them.
+   - **If you launch from the GUI** (dock / Start menu), the app does **not** read `~/.bashrc`, so
+     set them in the extension settings instead — `hera.serverUrl`, `hera.apiKey` (and optionally
+     `hera.extraEnv` for `HERA_USER`). This is the reliable option.
+4. **`bubblewrap`** (optional, recommended) for full shell sandboxing.
 
 ---
 
