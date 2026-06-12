@@ -125,6 +125,7 @@ Pick `[a]lways` at a `write_file` prompt and Hera creates files on its own for t
 | `/diff` | Show the working-tree `git diff` |
 | `/compact` | Summarize the conversation to free up context |
 | `/tokens` | Show token usage this session |
+| `/skills` | List the live shared-skills catalog (`/skills <id>` for detail) |
 | `/tools` | List the tools Hera can use (incl. MCP/custom) |
 | `/allow` | List `run_bash` allow patterns (or `/allow <pattern>` to add one) |
 | `/sandbox` | Show the `run_bash` sandbox status |
@@ -213,6 +214,11 @@ built-in denylist (`rm -rf /`, `sudo …`, `mkfs`, `curl … | sh`, …) always 
 If a `HERA.md` (or `AGENTS.md` / `AGENT.md`) file exists in the launch directory, Hera loads it
 into its system prompt and follows its conventions — like Claude Code's `CLAUDE.md`.
 
+This stack also has a **server-side shared skills** layer: the identity proxy injects skills from
+`shared-skills/skills/*.md` into CLI/VS Code/web requests using one shared catalog. Skills can
+trigger automatically, or be forced with `@skill:<id>` / `/skill <id>`. Use `/skills` to inspect
+the live catalog the proxy is serving.
+
 ---
 
 ## Configuration
@@ -249,11 +255,11 @@ into its system prompt and follows its conventions — like Claude Code's `CLAUD
 
 ## Updating
 
-Current release: **0.6.2**. On launch Hera checks the published version (at most once a day,
+Current release: **0.6.3**. On launch Hera checks the published version (at most once a day,
 fail-silent) and prints a one-line notice when a newer one is out:
 
 ```
-↑ update available: Hera 0.6.2 (you have 0.6.1)
+↑ update available: Hera 0.6.3 (you have 0.6.1)
   re-run the installer, or:  curl -fsSL <download_url> -o "$(command -v hera || echo ~/.local/bin/hera)"
 ```
 

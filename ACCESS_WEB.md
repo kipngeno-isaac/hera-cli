@@ -52,16 +52,45 @@ Your chats are private to your account; nothing is shared with other users.
 That's it for normal chat use. Standard Open WebUI features (rename/organize chats, regenerate,
 edit, upload files for RAG, etc.) all work and stay within your account.
 
+### Shared skills
+
+This stack also has a **Shared Skills** layer so the same domain/workflow guidance can apply in
+the web chat, Hera CLI, and the VS Code extension.
+
+- Skills are activated automatically when your message matches a skill's trigger phrases.
+- You can force one on explicitly by writing `@skill:<id>` or `/skill <id>` in your message.
+- Admins can add or update skills in the repo under [`shared-skills/skills/`](shared-skills/skills/).
+- Admins can see the current live catalog in **Admin Panel → Functions → Shared Skills** via the
+  function's visible `catalog` field.
+- Skills can be disabled globally in [`shared-skills/config.json`](shared-skills/config.json) with
+  the `disabled_skills` list, or by setting `enabled: false` in a skill file.
+
+Current built-in shared skills include:
+- `live-research`
+- `kenya-tax`
+- `software-delivery`
+- `world-time`
+
 ### Live web search (current info)
 
 The model can pull **live data from the internet** so it isn't limited to what it was trained on.
-In the message box, click the **🌐 globe / Web Search** toggle, then ask your question. Open WebUI
-searches the web (DuckDuckGo), fetches the top pages, feeds their full text to the model, and the
-answer comes back **with inline citations** you can click to open the source.
+Open WebUI still has the **🌐 globe / Web Search** toggle, but on this stack it also has a global
+**Auto Web Search** filter: prompts that clearly need current or external facts automatically turn
+web search on before the model answers. That includes queries like **"what's the time right now in
+Nairobi"**, weather, prices, news, "latest version", and similar time-sensitive requests. Open
+WebUI then searches the web (DuckDuckGo), fetches the top pages, feeds their full text to the
+model, and the answer comes back **with inline citations** you can click to open the source.
 
+For **exact time/date/day** questions, the browser chat now prefers the fast `world-time` shared
+skill instead of DDG. That path asks the internal skill API for the current time and injects the
+answer directly, so it avoids the slow / empty-source failure mode you saw before.
+
+- The 🌐 toggle still works as a **manual override**: use it to force browsing on a prompt that the
+  heuristic didn't catch, or to make the intent explicit.
 - Use it for anything **current or factual**: recent releases, today's news, library/API docs,
   "what's the latest version of X", error messages, etc.
-- Leave it **off** for ordinary chat/coding to keep replies fast — searching adds a few seconds.
+- Ordinary chat/coding still stays fast because the auto filter only triggers on prompts that look
+  time-sensitive or fact-dependent; it does **not** browse every message by default.
 - The model reads the fetched pages and **synthesizes** an answer; the citations show what it used.
 
 > Admins: this is enabled stack-wide (`ENABLE_WEB_SEARCH`, engine `duckduckgo`, no API key). See
@@ -120,14 +149,23 @@ Panel**).
   on every request, with a ~60 s cache).
 - **Model wiring:** Open WebUI talks to the inference server via `OPENAI_API_BASE_URL` /
   `OPENAI_API_KEY` (set in `docker-compose.yml`); users never see that shared key.
-- **Web search:** enabled stack-wide so users can browse from chat (the 🌐 toggle). Configured in
+- **Web search:** enabled stack-wide so users can browse from chat (the 🌐 toggle), and the custom
+  OWUI image seeds a global **Auto Web Search** filter into the DB on startup so current/factual
+  prompts can browse without the user toggling it manually. Core search is configured in
   `docker-compose.yml`: `ENABLE_WEB_SEARCH=true`, `WEB_SEARCH_ENGINE=duckduckgo` (needs no API
   key), `WEB_SEARCH_RESULT_COUNT=5`, and `BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL=true` (the
   fetched pages are injected straight into the model's 32k context — no embedding model to host,
   and the model sees the full sources). The per-role **Web Search** permission
   (`USER_PERMISSIONS_FEATURES_WEB_SEARCH`) is on. To change the engine, result count, or switch to
   an API-key search provider on a running instance, use *Admin Panel → Settings → Web Search*
-  (PersistentConfig — editing the env var afterwards won't take; see the gotcha below).
+  (PersistentConfig — editing the env var afterwards won't take; see the gotcha below). To tune or
+  disable the heuristic itself, use *Admin Panel → Functions → Auto Web Search*.
+- **Shared skills:** the custom OWUI image also seeds a global **Shared Skills** filter, and the
+  `shared-skills/` repo folder is mounted into the container read-only. Update skill files in
+  [`shared-skills/skills/`](shared-skills/skills/) and restart `open-webui` to refresh what the
+  browser chat injects. Users can force a skill with `@skill:<id>` or `/skill <id>`. The function
+  also exposes a visible `catalog` field in Admin → Functions so admins can see the current live
+  skill list and status.
 
 > **⚠ PersistentConfig gotcha (important).** Open WebUI persists most of these settings
 > (`ENABLE_SIGNUP`, `DEFAULT_USER_ROLE`, the API-key permission, model access, etc.) into its

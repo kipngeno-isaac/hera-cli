@@ -123,7 +123,7 @@ def save_config(updates):
         pass
 
 
-VERSION = "0.6.2"   # bump on every released change; mirrored in cli/VERSION
+VERSION = "0.6.3"   # bump on every released change; mirrored in cli/VERSION
 NAME    = _env("HERA_NAME", default="Hera")
 # No server host is baked into the source (so this repo can be public, revealing
 # neither key nor host). Each user supplies the endpoint + key once — via env
@@ -1688,6 +1688,65 @@ def _whoami_url():
     return base.rstrip("/") + "/whoami"
 
 
+def _skills_url():
+    """The proxy's shared-skills catalog endpoint, derived from the API URL."""
+    base = API_URL[:-3] if API_URL.endswith("/v1") else API_URL
+    return base.rstrip("/") + "/skills"
+
+
+def fetch_shared_skills():
+    if not (API_URL and API_KEY):
+        return None, "no server or API key configured"
+    try:
+        r = requests.get(
+            _skills_url(),
+            timeout=4,
+            headers={"Authorization": f"Bearer {API_KEY}", "User-Agent": _WEB_UA},
+        )
+    except requests.exceptions.RequestException as exc:
+        return None, str(exc)
+    if not r.ok:
+        return None, f"{r.status_code}: {(r.text or '').strip()[:200]}"
+    try:
+        data = r.json()
+    except ValueError as exc:
+        return None, f"invalid JSON from proxy: {exc}"
+    return data.get("skills") or [], ""
+
+
+def print_shared_skills(skill_id=""):
+    skills, err = fetch_shared_skills()
+    if skills is None:
+        print(f"\n{DIM}shared skills unavailable: {err}{R}\n")
+        return
+    if not skills:
+        print(f"\n{DIM}no shared skills are configured on the server.{R}\n")
+        return
+    if skill_id:
+        target = next((s for s in skills if s.get("id") == skill_id), None)
+        if not target:
+            print(f"\n{DIM}no shared skill named {skill_id!r}.{R}\n")
+            return
+        state = "enabled" if target.get("enabled") else "disabled"
+        triggers = ", ".join(target.get("triggers") or []) or "(none)"
+        print(
+            f"\n{CYAN}{target.get('id')}{R}  {DIM}[{state}] {target.get('provider') or 'prompt'}"
+            f"  priority={target.get('priority', 0)}{R}\n"
+            f"  {target.get('description') or '(no description)'}\n"
+            f"  triggers: {triggers}\n"
+        )
+        return
+    print(f"\n{DIM}shared skills:{R}")
+    for skill in skills:
+        state = "enabled" if skill.get("enabled") else "disabled"
+        provider = skill.get("provider") or "prompt"
+        print(
+            f"  {CYAN}{skill.get('id'):<18}{R}{DIM}[{state:<8}] {provider:<10} "
+            f"prio={skill.get('priority', 0):<3}{R} {skill.get('description', '')}"
+        )
+    print(f"\n{DIM}use /skills <id> for detail. Explicit activation: @skill:<id> or /skill <id>{R}\n")
+
+
 def resolve_identity():
     """Make the API key *be* the identity: ask the proxy who this key belongs to
     and cache the account email, so sessions are labelled by the real user with
@@ -2252,6 +2311,7 @@ def print_banner():
 # Each entry: (name, args-hint, one-line description).
 SLASH_COMMANDS = [
     ("/help",      "",          "show this list of commands"),
+    ("/skills",    "[id]",      "list shared skills, or show one in detail"),
     ("/undo",      "",          "revert the last file write/edit I made"),
     ("/diff",      "",          "show the working-tree git diff"),
     ("/compact",   "",          "summarize the conversation to free up context"),
@@ -3123,6 +3183,12 @@ def _repl(messages, spinner):
             continue
         if cmd == "/help":
             print_help()
+            continue
+        if cmd == "/skills":
+            print_shared_skills()
+            continue
+        if cmd.startswith("/skills "):
+            print_shared_skills(user_input[8:].strip())
             continue
         if cmd == "/tokens":
             s = SESSION

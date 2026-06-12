@@ -241,6 +241,7 @@ routed there automatically.
 | `/diff` | Show the working-tree `git diff` |
 | `/compact` | Summarize the conversation to free context |
 | `/tokens` | Token usage this session |
+| `/skills` | List the live shared-skills catalog (`/skills <id>` for detail) |
 | `/tools` | List tools (incl. MCP/custom) |
 | `/allow [pat]` | List or add `run_bash` allow patterns |
 | `/sandbox` | Show the sandbox status |
@@ -269,6 +270,15 @@ built-in denylist always forces a prompt for dangerous commands.
 
 A `HERA.md` (or `AGENTS.md`/`AGENT.md`) in the launch directory is loaded into the system prompt
 — like Claude Code's `CLAUDE.md`.
+
+This stack also has a **server-side shared skills** layer: the identity proxy injects skills from
+[`shared-skills/skills/`](shared-skills/skills/) into CLI/VS Code chat requests, using the same
+registry the browser chat uses. Users can activate a skill explicitly with `@skill:<id>` or
+`/skill <id>`.
+
+Use **`/skills`** to see the live server-side catalog, or **`/skills <id>`** for one skill's
+details. That output comes from the proxy, so it reflects the same enabled/disabled state the web
+chat is using.
 
 ---
 
@@ -299,12 +309,12 @@ A `HERA.md` (or `AGENTS.md`/`AGENT.md`) in the launch directory is loaded into t
 
 ## 6. Keeping Hera up to date
 
-The current release is **0.6.2**. On launch Hera checks the published version (at most once a
+The current release is **0.6.3**. On launch Hera checks the published version (at most once a
 day, fail-silent — it never blocks or errors startup). If a newer one is out, you'll see a
 one-line notice like:
 
 ```
-↑ update available: Hera 0.6.2 (you have 0.6.1)
+↑ update available: Hera 0.6.3 (you have 0.6.1)
   re-run the installer, or:  curl -fsSL <download_url> -o "$(command -v hera || echo ~/.local/bin/hera)"
 ```
 

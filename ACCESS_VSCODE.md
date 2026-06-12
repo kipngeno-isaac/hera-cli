@@ -26,6 +26,11 @@ graphical surface.
 The extension is **a GUI over the same `hera` CLI** — install the CLI first, and the editor just
 gives it a chat panel. If the CLI works in a terminal, the extension will too.
 
+The extension also inherits the same **server-side shared skills** as the CLI and web chat,
+because it drives `hera --serve` through the identity proxy. Prompts can trigger skills
+automatically, or you can force one explicitly with `@skill:<id>` or `/skill <id>`. Use
+`/skills` in a terminal Hera session to inspect the live catalog.
+
 ---
 
 ## 1. Prerequisites
@@ -39,7 +44,7 @@ gives it a chat panel. If the CLI works in a terminal, the extension will too.
    ```
    (Or set `hera.command` in the extension settings to an absolute path — e.g.
    `~/.local/bin/hera`, or on Windows the full path to your `hera.py` launcher.) Confirm it's
-   found: `hera --version` should print `Hera 0.6.2`.
+   found: `hera --version` should print `Hera 0.6.3`.
 3. **Credentials.** Easiest: **run `hera` once in a terminal and paste your key** (see
    [`ACCESS_CLI.md`](ACCESS_CLI.md)). That saves `~/.config/hera/config.json` (endpoint + key +
    your resolved account email), and `hera --serve` — what the extension drives — reads that file
