@@ -1,9 +1,11 @@
 # Accessing Hera in VS Code / Cursor
 
 The **Hera extension** brings the agent into your editor: a native **chat panel** (streaming
-answers, tool cards, inline approval buttons), **in-editor diffs** for every edit Hera makes,
-and **LSP-driven context** (send the file's symbols + diagnostics with your question). It drives
-the same `hera` CLI under the hood — one agent, just a graphical surface.
+answers + thinking, step-by-step narration, tool cards, inline approval buttons with
+**reject-with-feedback** and **Stop**, and **image attachments**), **in-editor diffs of the
+proposed change before it's applied**, and **LSP-driven context** (send the file's symbols +
+diagnostics with your question). It drives the same `hera` CLI under the hood — one agent, just a
+graphical surface.
 
 > Cursor is a VS Code fork, so everything here works in Cursor identically.
 > See also [`ACCESS_CLI.md`](ACCESS_CLI.md) (terminal) and [`ACCESS_WEB.md`](ACCESS_WEB.md) (web).
@@ -43,7 +45,7 @@ distributed as source (no Marketplace listing), so you load it locally:
 ```bash
 cd ide/vscode-hera
 npm install -g @vscode/vsce
-vsce package                       # produces hera-cli-0.1.0.vsix
+vsce package                       # produces hera-cli-0.2.0.vsix
 ```
 Then in VS Code: **Extensions → ⋯ → Install from VSIX…** and pick the file.
 
@@ -58,7 +60,8 @@ Open **Settings → Extensions → Hera** (or edit `settings.json`):
   "hera.command": "hera",
   "hera.serverUrl": "http://<HOST>:8090/v1",
   "hera.apiKey": "sk-your-open-webui-key",
-  "hera.showDiffs": true
+  "hera.showDiffs": true,
+  "hera.visionUrl": ""
 }
 ```
 
@@ -82,11 +85,19 @@ Open **Settings → Extensions → Hera** (or edit `settings.json`):
 | **Hera: Resume last session** | `hera --continue` in a terminal |
 
 **The chat panel:**
-- The model's **thinking** appears in a collapsible block; the **answer** renders as markdown.
-- Each tool call shows as a card (`◆ tool → result`); when Hera **edits a file**, a native
-  **diff editor** opens (before ↔ after) so you can review the change. Toggle with `hera.showDiffs`.
+- The model's **thinking** streams in a block that's open while it works, then collapses; before
+  each tool call a plain-language **`→` narration** line says what Hera is about to do; the
+  **answer** renders as markdown.
+- Each tool call shows as a card (`◆ tool → result`). When Hera is about to **edit a file**, a
+  native **diff editor opens showing the proposed change before it's applied** (before ↔ after),
+  so you review it *before* approving. Toggle with `hera.showDiffs`.
 - When a write/edit/shell command needs approval, **buttons** appear inline
-  (*Approve once / Always / Deny*).
+  (*Approve once / Always / Deny*) plus a text box and **Reject with feedback** — type what Hera
+  should do instead and it goes straight back to the model.
+- While Hera is generating, the **Send** button becomes **Stop** — click it to interrupt the turn.
+- **Attach an image** with the **📎** button, or **paste**/**drag-drop** one into the message box;
+  it shows as a thumbnail chip. The base model is text-only, so set `hera.visionUrl` (a vision
+  endpoint) to actually analyze images — otherwise they're attached but not interpreted.
 - Per-turn token usage is shown.
 
 ---
@@ -118,6 +129,8 @@ same per-user auth via your Open WebUI key.
 
 ## Scope
 
-Real today: chat panel, in-editor diffs, LSP context, terminal commands. Not yet: applying edits
-through VS Code's own edit API (Hera writes to disk via its tools, shown as a diff) and a
+Real today: chat panel with streaming thinking + step narration, proposed-edit diffs shown
+before they're applied, reject-with-feedback, Stop/interrupt, image attachments, LSP context, and
+terminal commands. Not yet: applying edits through VS Code's own edit API (Hera writes to disk via
+its tools, shown as a diff), built-in vision (set `hera.visionUrl` to a vision endpoint), and a
 Marketplace listing.

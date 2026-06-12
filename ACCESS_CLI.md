@@ -137,16 +137,41 @@ you.
 
 ## 4. Using it
 
-Type a request in plain language. Reference files with **`@path`** to attach them. Hera pauses
-for approval before anything that edits files or runs a command:
+Type a request in plain language. Reference files with **`@path`** to attach them — including
+**images** (`@screenshot.png`; see "Images" below). As Hera works it narrates each step in plain
+language (`→ Reading config.py`) above the tool card, alongside its streaming reasoning, so you
+can follow what it's doing. Hera pauses for approval before anything that edits files or runs a
+command, and for edits it shows the **full proposed diff first**:
 
 ```text
-⚠ approval needed (run_bash)
-  $ git diff
-  [y]es once / [a]lways this command / [p]rogram (all 'git') / [n]o:
+⚠ approval needed (edit_file)
+  edit config.py
+    @@ -10,3 +10,3 @@
+     def load():
+    -    key = os.environ["KEY"]
+    +    key = os.environ.get("KEY", "")
+  run this? [y]es / [a]lways / [t]ype feedback / [n]o:
 ```
 
+Choose **`[t]`** to type an instruction instead of a plain yes/no — your text goes straight back
+to the model ("no, use `getpass` instead"). Press **`ESC`** at any time while Hera is generating
+to **interrupt** the current turn; your session and history are kept, and you're returned to the
+prompt (Ctrl-C still works too).
+
 Read-only tools never prompt. `HERA_YOLO=1` auto-approves everything (sandbox/throwaway only).
+
+### Images
+
+Attach an image with `@path` (`.png/.jpg/.jpeg/.gif/.webp/.bmp`):
+
+```text
+❯ what's wrong here? @error-screenshot.png
+```
+
+The default Qwen model is **text-only**, so out of the box Hera attaches the image but tells you
+it can't interpret it. To actually analyze images, point Hera at a vision-capable
+OpenAI-compatible endpoint with `HERA_VISION_URL` (and `HERA_VISION_MODEL`); image turns are then
+routed there automatically.
 
 ### Tools
 
@@ -211,6 +236,8 @@ A `HERA.md` (or `AGENTS.md`/`AGENT.md`) in the launch directory is loaded into t
 | `HERA_YOLO` | `0` | `1` = auto-approve every tool call. Sandbox only. |
 | `HERA_MAX_STEPS` | `25` | Max tool round-trips per message. |
 | `HERA_HIDE_REASONING` | `0` | `1` = don't stream the model's thinking. |
+| `HERA_VISION_URL` | _(empty)_ | Vision endpoint for attached images. Unset → images attached but not interpreted (text-only model). |
+| `HERA_VISION_MODEL` | = `HERA_MODEL` | Model name at `HERA_VISION_URL`. |
 | `HERA_NO_COLOR` / `HERA_FORCE_COLOR` | `0` | Disable / force colour. |
 | `HERA_SANDBOX` | `auto` | `auto` / `bwrap` / `unshare` / `none`. |
 | `HERA_SANDBOX_NET` | `0` | `1` = allow network in the sandbox. |
@@ -225,7 +252,7 @@ A `HERA.md` (or `AGENTS.md`/`AGENT.md`) in the launch directory is loaded into t
 
 ## 6. Keeping Hera up to date
 
-The current release is **0.5.1**. On launch Hera checks the published version (at most once a
+The current release is **0.6.0**. On launch Hera checks the published version (at most once a
 day, fail-silent — it never blocks or errors startup). If a newer one is out, you'll see a
 one-line notice like:
 

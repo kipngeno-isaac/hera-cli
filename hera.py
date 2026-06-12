@@ -16,11 +16,18 @@ Optional:       HERA_MODEL          (default qwen3.6-35b-a3b)
                 HERA_YOLO=1         auto-approve every tool call (no prompts)
                 HERA_MAX_STEPS      max tool round-trips per message (default 25)
                 HERA_HIDE_REASONING=1   don't stream the model's thinking
+                HERA_VISION_URL     vision endpoint for image attachments (the
+                                    main model is text-only; without this, images
+                                    are attached but not interpreted)
+                HERA_VISION_MODEL   model name at HERA_VISION_URL
 
 Legacy QWEN_* variables (and LLAMA_API_KEY) are still honoured as fallbacks.
 """
 import argparse
 import ast
+import base64
+import contextlib
+import difflib
 import fnmatch
 import glob as globmod
 import hashlib
@@ -28,7 +35,9 @@ import html as ihtml
 import importlib.util
 import json
 import math
+import mimetypes
 import os
+import queue
 import re
 import select
 import shutil
@@ -114,7 +123,7 @@ def save_config(updates):
         pass
 
 
-VERSION = "0.5.1"   # bump on every released change; mirrored in cli/VERSION
+VERSION = "0.6.0"   # bump on every released change; mirrored in cli/VERSION
 NAME    = _env("HERA_NAME", default="Hera")
 # No server host is baked into the source (so this repo can be public, revealing
 # neither key nor host). Each user supplies the endpoint + key once — via env
@@ -122,12 +131,19 @@ NAME    = _env("HERA_NAME", default="Hera")
 API_URL = _cfg("HERA_API_URL", "QWEN_API_URL", key="api_url", default="").rstrip("/")
 MODEL   = _env("HERA_MODEL",   "QWEN_MODEL",   default="qwen3.6-35b-a3b")
 API_KEY = _cfg("HERA_API_KEY", "QWEN_API_KEY", "LLAMA_API_KEY", key="api_key", default="")
+# Vision: the main model is text-only. If a vision-capable OpenAI-compatible
+# endpoint is configured, turns that carry an attached image are routed to it;
+# otherwise images are attached but flagged as not-interpreted (see stream_turn).
+VISION_URL   = _cfg("HERA_VISION_URL", key="vision_url", default="").rstrip("/")
+VISION_MODEL = _env("HERA_VISION_MODEL", default="")
+IMAGE_EXTS   = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
 YOLO    = _truthy(_env("HERA_YOLO", "QWEN_YOLO"))
 MAX_STEPS      = int(_env("HERA_MAX_STEPS", "QWEN_MAX_STEPS", default="25"))
 HIDE_REASONING = _truthy(_env("HERA_HIDE_REASONING", "QWEN_HIDE_REASONING"))
 
 MAX_TOOL_OUTPUT = 12000    # chars; tool results longer than this are truncated
 MAX_READ_BYTES  = 256_000  # cap read_file size
+MAX_IMAGE_BYTES = 10_000_000  # cap an attached image before base64 (≈13MB encoded)
 
 # Web access: the model can search/fetch the live web when it lacks info.
 WEB_ENABLED = not _truthy(_env("HERA_NO_WEB"))      # on by default; HERA_NO_WEB=1 disables
@@ -146,6 +162,75 @@ SANDBOX_NET  = _truthy(_env("HERA_SANDBOX_NET"))  # allow network inside the san
 
 # Running token usage for the whole session.
 SESSION = {"prompt": 0, "completion": 0, "total": 0, "requests": 0}
+
+# Set (by the ESC watcher thread in the CLI, or a {"type":"interrupt"} message in
+# --serve mode) to ask the current model turn to stop mid-stream. Cleared at the
+# start of every turn. See interruptible() and stream_turn().
+_INTERRUPT = threading.Event()
+_VISION_WARNED = False  # warn once per process when an image can't be interpreted
+
+
+def _text_of(content):
+    """Flatten a message's `content` to plain text.
+
+    Content is normally a string, but a user message with an attached image is
+    an OpenAI multimodal list of parts. Anything that assumes plain text (the
+    compactor, session previews) goes through here.
+    """
+    if isinstance(content, list):
+        out = []
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") == "text":
+                out.append(part.get("text", ""))
+            elif part.get("type") == "image_url":
+                out.append("[image]")
+        return " ".join(out).strip()
+    return content or ""
+
+
+def _msg_has_image(m):
+    """True if a message's content carries an image_url part."""
+    c = m.get("content")
+    return isinstance(c, list) and any(
+        isinstance(p, dict) and p.get("type") == "image_url" for p in c)
+
+
+def _downconvert_images(messages):
+    """Replace image parts with a text placeholder so a text-only model can
+    still answer the turn (it just can't see the picture)."""
+    out = []
+    for m in messages:
+        if not _msg_has_image(m):
+            out.append(m)
+            continue
+        texts = []
+        for p in m["content"]:
+            if p.get("type") == "text":
+                texts.append(p.get("text", ""))
+            elif p.get("type") == "image_url":
+                texts.append("[image attached — not interpreted by this text-only model]")
+        nm = dict(m)
+        nm["content"] = "\n".join(t for t in texts if t).strip() or "[image attached]"
+        out.append(nm)
+    return out
+
+
+def _select_endpoint(messages):
+    """Pick (url, model, messages, downgraded) for a turn.
+
+    If any message carries an image and HERA_VISION_URL is set, route to that
+    vision endpoint/model. If an image is present but no vision endpoint is
+    configured, down-convert the images to text and flag `downgraded` so the
+    caller can warn that the current model can't see them.
+    """
+    has_image = any(_msg_has_image(m) for m in messages)
+    if has_image and VISION_URL:
+        return VISION_URL, (VISION_MODEL or MODEL), messages, False
+    if has_image:
+        return API_URL, MODEL, _downconvert_images(messages), True
+    return API_URL, MODEL, messages, False
 
 
 # ── Sandbox detection ─────────────────────────────────────────────────────────
@@ -921,6 +1006,70 @@ def _diff_preview(old, new):
     return "\n".join(lines)
 
 
+def _full_diff(old, new, max_lines=120):
+    """A colored unified diff of the *whole* proposed change (capped).
+
+    Shown before an edit is applied so the user sees exactly what will change —
+    Claude-Code-style. `old`/`new` are the full before/after file contents.
+    """
+    a = old.splitlines()
+    b = new.splitlines()
+    out = []
+    for ln in difflib.unified_diff(a, b, lineterm="", n=2):
+        if ln.startswith("+++") or ln.startswith("---"):
+            continue
+        if ln.startswith("@@"):
+            out.append(f"    {CYAN}{ln}{R}")
+        elif ln.startswith("+"):
+            out.append(f"    {GREEN}{ln[:200]}{R}")
+        elif ln.startswith("-"):
+            out.append(f"    {RED}{ln[:200]}{R}")
+        else:
+            out.append(f"    {DIM}{ln[:200]}{R}")
+    if not out:
+        return f"    {DIM}(no textual change){R}"
+    if len(out) > max_lines:
+        extra = len(out) - max_lines
+        out = out[:max_lines] + [f"    {DIM}… (+{extra} more diff lines){R}"]
+    return "\n".join(out)
+
+
+def _narrate(name, args):
+    """A plain-language, one-line description of what a tool call is about to do.
+
+    Printed before each tool runs so a reader can follow Hera's actions in
+    words, not just see raw tool cards.
+    """
+    p = args.get("path", "")
+    if name == "read_file":
+        return f"Reading {p}"
+    if name == "write_file":
+        return f"Writing {p}"
+    if name == "edit_file":
+        return f"Editing {p}"
+    if name == "list_dir":
+        return f"Listing {args.get('path', '.')}"
+    if name == "glob":
+        return f"Finding files matching {args.get('pattern', '')}"
+    if name == "search":
+        return f"Searching code for {args.get('pattern', '')}"
+    if name == "symbols":
+        return "Indexing code symbols"
+    if name == "semantic_search":
+        return f"Semantic-searching for {args.get('query', '')}"
+    if name == "run_bash":
+        return f"Running  {args.get('command', '')}"
+    if name == "install_tool":
+        return f"Installing {args.get('program', '?')}"
+    if name == "web_search":
+        return f"Searching the web for {args.get('query', '')}"
+    if name == "web_fetch":
+        return f"Fetching {args.get('url', '')}"
+    if name == "task":
+        return f"Delegating a sub-task: {args.get('description', '')[:60]}"
+    return f"Calling {name}"
+
+
 def _preview_call(name, args):
     if name == "run_bash":
         return f"$ {args.get('command', '')}"
@@ -931,13 +1080,39 @@ def _preview_call(name, args):
         head = f"install {prog}" + (f"  — {reason}" if reason else "")
         return f"{head}\n    $ {plan}"
     if name == "write_file":
+        path = args.get("path", "?")
         c = args.get("content", "")
         n = c.count("\n") + 1
-        return f"write {args.get('path', '?')}  ({n} lines)"
+        existed, before = _snapshot(path)
+        verb = "overwrite" if existed else "create"
+        return (f"{verb} {path}  ({n} lines)\n"
+                f"{_full_diff(before or '', c)}")
     if name == "edit_file":
-        return (f"edit {args.get('path', '?')}\n"
-                f"{_diff_preview(args.get('old_string', ''), args.get('new_string', ''))}")
+        path = args.get("path", "?")
+        old_s, new_s = args.get("old_string", ""), args.get("new_string", "")
+        existed, before = _snapshot(path)
+        # Compute the proposed after-text without touching the file, so we can
+        # show the full change before it is applied.
+        if existed and before is not None and old_s in before:
+            replace_all = args.get("replace_all", False)
+            after = (before.replace(old_s, new_s) if replace_all
+                     else before.replace(old_s, new_s, 1))
+            return f"edit {path}\n{_full_diff(before, after)}"
+        return f"edit {path}\n{_diff_preview(old_s, new_s)}"
     return f"{name}({json.dumps(args)})"
+
+
+def _type_feedback():
+    """Prompt for a freeform instruction at an approval gate.
+
+    The returned text becomes the tool's denial reason, so it is fed straight
+    back to the model — Claude-Code's "No, and tell it what to do instead".
+    """
+    try:
+        fb = input(f"{BOLD}  tell Hera what to do instead: {R}").strip()
+    except (EOFError, KeyboardInterrupt):
+        return "user declined to run this tool"
+    return fb or "user declined to run this tool"
 
 
 def approve(name, args):
@@ -957,7 +1132,8 @@ def approve(name, args):
         print(f"  {DIM}sandbox: {sandbox_label()}{R}")
         try:
             ans = input(f"{BOLD}  [y]es once / [a]lways this command / "
-                        f"[p]rogram (all '{cmd.split()[0] if cmd.split() else '?'}') / [n]o:{R} ").strip().lower()
+                        f"[p]rogram (all '{cmd.split()[0] if cmd.split() else '?'}') / "
+                        f"[t]ype feedback / [n]o:{R} ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             return "user aborted (no input)"
         if ans in ("y", "yes", ""):
@@ -970,6 +1146,8 @@ def approve(name, args):
             ALLOW_PATTERNS.append(f"{prog} *")
             ALLOW_PATTERNS.append(prog)
             return True
+        if ans in ("t", "type"):
+            return _type_feedback()
         return "user declined to run this tool"
 
     # write_file / edit_file: tool-level approval.
@@ -977,7 +1155,7 @@ def approve(name, args):
     for ln in _preview_call(name, args).split("\n"):
         print(f"  {ln}")
     try:
-        ans = input(f"{BOLD}  run this? [y]es / [a]lways / [n]o:{R} ").strip().lower()
+        ans = input(f"{BOLD}  run this? [y]es / [a]lways / [t]ype feedback / [n]o:{R} ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         return "user aborted (no input)"
     if ans in ("y", "yes", ""):
@@ -985,7 +1163,58 @@ def approve(name, args):
     if ans in ("a", "always"):
         _always_ok.add(name)
         return True
+    if ans in ("t", "type"):
+        return _type_feedback()
     return "user declined to run this tool"
+
+
+# ── ESC-to-interrupt ──────────────────────────────────────────────────────────
+@contextlib.contextmanager
+def interruptible():
+    """While the body runs, watch the terminal for ESC and set _INTERRUPT.
+
+    A daemon thread puts stdin in cbreak mode and polls for the ESC byte
+    (0x1b). stream_turn() checks _INTERRUPT each chunk and stops the turn.
+    No-ops off a real TTY (e.g. piped input, Windows). Ctrl-C is unaffected —
+    it still raises KeyboardInterrupt through the normal path.
+    """
+    _INTERRUPT.clear()
+    if termios is None or not sys.stdin.isatty():
+        yield
+        return
+    fd = sys.stdin.fileno()
+    stop = threading.Event()
+    try:
+        old = termios.tcgetattr(fd)
+    except termios.error:
+        yield
+        return
+
+    def watch():
+        try:
+            tty.setcbreak(fd)
+            while not stop.is_set():
+                r, _, _ = select.select([fd], [], [], 0.1)
+                if not r:
+                    continue
+                b = os.read(fd, 1)
+                if b == b"\x1b":          # ESC
+                    _INTERRUPT.set()
+                    return
+        except Exception:                 # noqa: BLE001 — never crash the turn
+            pass
+
+    t = threading.Thread(target=watch, daemon=True)
+    t.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        t.join(timeout=0.3)
+        try:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        except termios.error:
+            pass
 
 
 # ── Streaming chat call ───────────────────────────────────────────────────────
@@ -997,15 +1226,23 @@ def stream_turn(messages, spinner, tools=None):
     # Transient blips (server busy under --parallel load, a dropped connection)
     # return 5xx/connection errors. Retry a few times with backoff before giving
     # up, so one hiccup doesn't end the turn.
+    global _VISION_WARNED
+    url, model, send_messages, downgraded = _select_endpoint(messages)
+    if downgraded and not _VISION_WARNED:
+        _VISION_WARNED = True
+        spinner.stop()
+        print(f"{YELL}⚠ image attached, but the current model is text-only — "
+              f"set HERA_VISION_URL to enable vision.{R}", file=sys.stderr)
+
     resp = None
     last_err = None
     for attempt in range(3):
         try:
             resp = requests.post(
-                f"{API_URL}/chat/completions",
+                f"{url}/chat/completions",
                 json={
-                    "model": MODEL,
-                    "messages": messages,
+                    "model": model,
+                    "messages": send_messages,
                     "tools": tools if tools is not None else TOOL_SCHEMAS,
                     "tool_choice": "auto",
                     "stream": True,
@@ -1037,7 +1274,7 @@ def stream_turn(messages, spinner, tools=None):
     if resp is None:
         spinner.stop()
         if isinstance(last_err, requests.exceptions.ConnectionError):
-            print(f"{RED}[error] Cannot reach {API_URL}{R}\n", file=sys.stderr)
+            print(f"{RED}[error] Cannot reach {url}{R}\n", file=sys.stderr)
         elif isinstance(last_err, requests.exceptions.Timeout):
             print(f"{RED}[error] Request timed out{R}\n", file=sys.stderr)
         else:
@@ -1059,10 +1296,17 @@ def stream_turn(messages, spinner, tools=None):
         nonlocal started
         if not started:
             elapsed = spinner.stop()
-            print(f"\n{ACCENT}▌{R} {BOLD}{NAME}{R}  {GREY}· {elapsed:.1f}s to first token{R}\n")
+            print(f"\n{ACCENT}▌{R} {BOLD}{NAME}{R}  {GREY}· {elapsed:.1f}s to first token{R}"
+                  f"  {DIM}(esc to interrupt){R}\n")
             started = True
 
     for raw in resp.iter_lines():
+        if _INTERRUPT.is_set():
+            ensure_header()
+            print(f"\n{R}{DIM}⎿ (interrupted by ESC){R}", flush=True)
+            finish_reason = "interrupted"
+            resp.close()
+            break
         if not raw:
             continue
         line = raw.decode("utf-8", errors="replace")
@@ -1188,11 +1432,24 @@ def run_agent(messages, spinner):
     turn_tokens = 0
     for step in range(MAX_STEPS):
         spinner.start()
-        result = stream_turn(messages, spinner)
+        # Only the streaming call watches for ESC — tool approvals use input()
+        # on the same stdin, so the watcher must be off while they run.
+        with interruptible():
+            result = stream_turn(messages, spinner)
         if result is None:
             return False  # transport error; caller rolls back the user message
 
         turn_tokens += _account(result.get("usage"))
+
+        # ESC mid-stream: keep the partial answer (as a clean string message so
+        # history isn't poisoned by dangling tool_calls) and hand control back.
+        if result.get("finish_reason") == "interrupted":
+            messages.append({"role": "assistant",
+                             "content": result["content"] or "(interrupted)"})
+            print(f"{GREY}  {turn_tokens} tok this turn · {SESSION['total']} session"
+                  f"  · stopped by ESC{R}\n")
+            return True
+
         calls = result["tool_calls"]
 
         assistant_msg = {"role": "assistant", "content": result["content"] or ""}
@@ -1257,7 +1514,10 @@ def _exec_call(c, indent=""):
     except json.JSONDecodeError:
         args = {}
 
-    print(f"\n{indent}{TEAL}◆{R} {BOLD}{name}{R}  {GREY}{_preview_call(name, args).splitlines()[0]}{R}")
+    # Announce the action in plain language first, then the tool card, so a
+    # reader can follow what Hera is doing without parsing tool internals.
+    print(f"\n{indent}{ACCENT}→{R} {_narrate(name, args)}")
+    print(f"{indent}{TEAL}◆{R} {BOLD}{name}{R}  {GREY}{_preview_call(name, args).splitlines()[0]}{R}")
 
     if name not in TOOLS:
         print(f"{indent}  {GREY}⎿{R} {RED}unknown tool{R}")
@@ -1531,7 +1791,7 @@ def load_session(sid):
 def _first_user(messages):
     for m in messages:
         if m.get("role") == "user":
-            return " ".join((m.get("content") or "").split())[:56]
+            return " ".join(_text_of(m.get("content")).split())[:56]
     return "(empty)"
 
 
@@ -1840,21 +2100,59 @@ def system_prompt():
 
 
 # ── @file mentions & context compaction ───────────────────────────────────────
-def expand_mentions(text):
-    """Inline the contents of any @path the user references. Returns (text, names)."""
-    attached = []
+def _image_data_url(path):
+    """Read an image file and return a base64 `data:` URL, or None if unreadable
+    or over MAX_IMAGE_BYTES."""
+    mime = mimetypes.guess_type(path)[0] or "image/png"
+    try:
+        if os.path.getsize(path) > MAX_IMAGE_BYTES:
+            return None
+        with open(path, "rb") as f:
+            raw = f.read()
+    except OSError:
+        return None
+    return f"data:{mime};base64," + base64.b64encode(raw).decode("ascii")
+
+
+def expand_mentions(text, extra_images=None):
+    """Resolve any @path the user references.
+
+    Text files are inlined as before. Image @paths (and any pre-encoded
+    `extra_images` — list of (name, data_url), used by the VS Code attach flow)
+    become OpenAI `image_url` parts. Returns (content, names) where content is a
+    plain string when no images are present, or a multimodal parts list when
+    they are.
+    """
+    text_attached = []   # (name, text)
+    images = []          # (name, data_url)
     for tok in re.findall(r"(?<!\S)@([^\s]+)", text):
         p = _resolve(tok)
-        if os.path.isfile(p):
-            try:
-                with open(p, "r", encoding="utf-8", errors="replace") as f:
-                    attached.append((tok, f.read()[:MAX_READ_BYTES]))
-            except OSError:
-                pass
-    if not attached:
-        return text, []
-    blocks = "\n\n".join(f"--- {n} ---\n{c}" for n, c in attached)
-    return f"{text}\n\n[Attached files]\n{blocks}", [n for n, _ in attached]
+        if not os.path.isfile(p):
+            continue
+        if tok.lower().endswith(IMAGE_EXTS):
+            du = _image_data_url(p)
+            if du:
+                images.append((tok, du))
+            continue
+        try:
+            with open(p, "r", encoding="utf-8", errors="replace") as f:
+                text_attached.append((tok, f.read()[:MAX_READ_BYTES]))
+        except OSError:
+            pass
+    for name, du in (extra_images or []):
+        if du:
+            images.append((name, du))
+
+    body = text
+    if text_attached:
+        blocks = "\n\n".join(f"--- {n} ---\n{c}" for n, c in text_attached)
+        body = f"{text}\n\n[Attached files]\n{blocks}"
+    names = [n for n, _ in text_attached] + [n for n, _ in images]
+    if not images:
+        return body, names
+    parts = [{"type": "text", "text": body}]
+    parts += [{"type": "image_url", "image_url": {"url": du}} for _, du in images]
+    return parts, names
 
 
 def compact_history(messages):
@@ -1863,7 +2161,7 @@ def compact_history(messages):
         return "nothing to compact yet"
     convo = []
     for m in messages[1:]:
-        c = m.get("content") or ""
+        c = _text_of(m.get("content"))
         if m.get("tool_calls"):
             c += " [tools: " + ", ".join(tc["function"]["name"] for tc in m["tool_calls"]) + "]"
         convo.append(f"{m.get('role')}: {c[:1500]}")
@@ -2286,7 +2584,9 @@ def print_help():
     print(f"\n{DIM}"
           f"  Ask me to build, fix, explain, or refactor code. I work in the\n"
           f"  current directory and ask before editing files or running shell\n"
-          f"  commands (unless HERA_YOLO=1). Reference files with @path to attach them."
+          f"  commands (unless HERA_YOLO=1). Attach a file or image with @path\n"
+          f"  (e.g. @screenshot.png). At an approval prompt, choose [t] to type an\n"
+          f"  instruction instead of yes/no. Press {R}{CYAN}ESC{R}{DIM} while I'm working to interrupt."
           f"{R}\n")
     for name, args, desc in SLASH_COMMANDS:
         print(_slash_row(name, args, desc))
@@ -2301,30 +2601,62 @@ def print_help():
 # `hera --serve` speaks newline-delimited JSON on stdin/stdout so a GUI can drive
 # the full agent. stdout carries ONLY JSON events; logs go to stderr.
 #
-#   in : {"type":"prompt","text":...} | {"type":"approval","decision":"y|a|p|n"}
-#        | {"type":"undo"} | {"type":"clear"} | {"type":"exit"}
-#   out: ready | reasoning | token | tool_start | approval_request | tool_end
-#        | turn_end | info | error
+#   in : {"type":"prompt","text":...,"images":[dataURL,…]}
+#        | {"type":"approval","decision":"y|a|p|n","feedback":"…"}
+#        | {"type":"interrupt"} | {"type":"undo"} | {"type":"clear"} | {"type":"exit"}
+#   out: ready | reasoning | token | narration | tool_start | proposed_diff
+#        | approval_request | tool_end | turn_end | info | error
+#
+# A single reader thread (_serve_input_thread) demultiplexes stdin so the editor
+# can send an `interrupt` or an `approval` *while* a turn is streaming: approvals
+# go to _APPROVAL_Q, an interrupt sets _INTERRUPT, everything else to _MAIN_Q.
+_MAIN_Q = queue.Queue()
+_APPROVAL_Q = queue.Queue()
+_SERVE_CLOSED = threading.Event()
+
+
 def _emit(obj):
     sys.stdout.write(json.dumps(obj) + "\n")
     sys.stdout.flush()
 
 
-def _serve_read():
-    line = sys.stdin.readline()
-    if not line:
-        return None
-    try:
-        return json.loads(line)
-    except json.JSONDecodeError:
-        return {}
+# NOTE: stdin is consumed exclusively by _serve_input_thread below — nothing in
+# serve mode reads sys.stdin directly (that would race the reader thread).
+def _serve_input_thread():
+    while True:
+        line = sys.stdin.readline()
+        if not line:                       # stdin closed → tell both consumers
+            _SERVE_CLOSED.set()
+            _MAIN_Q.put(None)
+            _APPROVAL_Q.put(None)
+            return
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        t = msg.get("type")
+        if t == "interrupt":
+            _INTERRUPT.set()
+        elif t == "approval":
+            _APPROVAL_Q.put(msg)
+        else:
+            _MAIN_Q.put(msg)
 
 
 def _serve_stream(messages):
+    global _VISION_WARNED
+    url, model, send_messages, downgraded = _select_endpoint(messages)
+    if downgraded and not _VISION_WARNED:
+        _VISION_WARNED = True
+        _emit({"type": "info", "text": "image attached, but the current model is "
+               "text-only — set HERA_VISION_URL to enable vision."})
     try:
         resp = requests.post(
-            f"{API_URL}/chat/completions",
-            json={"model": MODEL, "messages": messages, "tools": TOOL_SCHEMAS,
+            f"{url}/chat/completions",
+            json={"model": model, "messages": send_messages, "tools": TOOL_SCHEMAS,
                   "tool_choice": "auto", "stream": True,
                   "stream_options": {"include_usage": True}},
             headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
@@ -2337,6 +2669,10 @@ def _serve_stream(messages):
 
     content, tool_calls, usage, finish = [], {}, None, None
     for raw in resp.iter_lines():
+        if _INTERRUPT.is_set():
+            finish = "interrupted"
+            resp.close()
+            break
         if not raw:
             continue
         line = raw.decode("utf-8", errors="replace")
@@ -2384,11 +2720,14 @@ def _serve_approve(name, args):
            "preview": _strip_ansi(_preview_call(name, args)),
            "command": args.get("command", "")})
     while True:
-        msg = _serve_read()
+        msg = _APPROVAL_Q.get()
         if msg is None:
             return "aborted (input closed)"
         if msg.get("type") == "approval":
             d = msg.get("decision", "n")
+            fb = (msg.get("feedback") or "").strip()
+            if d not in ("y", "a", "p") and fb:
+                return fb  # typed instruction → fed straight back to the model
             if d == "a" and name == "run_bash":
                 ALLOW_PATTERNS.append(" ".join(args.get("command", "").split()))
             elif d == "a":
@@ -2407,7 +2746,7 @@ def _serve_install_approver(program, plan):
            "preview": f"install {program}  — required by the last command\n    $ {plan}",
            "command": ""})
     while True:
-        msg = _serve_read()
+        msg = _APPROVAL_Q.get()
         if msg is None:
             return False
         if msg.get("type") == "approval":
@@ -2420,12 +2759,28 @@ def _serve_exec(c):
         args = json.loads(c["arguments"] or "{}")
     except json.JSONDecodeError:
         args = {}
-    _emit({"type": "tool_start", "name": name,
+    _emit({"type": "tool_start", "name": name, "narration": _narrate(name, args),
            "preview": _strip_ansi(_preview_call(name, args))})
     if name not in TOOLS:
         out = f"[error] unknown tool: {name}"
         _emit({"type": "tool_end", "name": name, "error": True, "output": out})
         return out
+    # Show the change the editor *will* make before it's applied — compute the
+    # proposed before/after without touching the file.
+    if name in ("write_file", "edit_file"):
+        path = args.get("path", "")
+        existed, before = _snapshot(path)
+        after = None
+        if name == "write_file":
+            after = args.get("content", "")
+        else:
+            old_s, new_s = args.get("old_string", ""), args.get("new_string", "")
+            if existed and before is not None and old_s in before:
+                after = (before.replace(old_s, new_s) if args.get("replace_all")
+                         else before.replace(old_s, new_s, 1))
+        if after is not None:
+            _emit({"type": "proposed_diff", "path": _resolve(path),
+                   "before": (before or "")[:200_000], "after": after[:200_000]})
     verdict = _serve_approve(name, args)
     if verdict is not True:
         out = f"[denied] {verdict}"
@@ -2462,6 +2817,13 @@ def _serve_run(messages):
         if res is None:
             return
         turn += _account(res.get("usage"))
+        if res.get("finish_reason") == "interrupted":
+            messages.append({"role": "assistant",
+                             "content": res["content"] or "(interrupted)"})
+            _emit({"type": "turn_end", "content": res["content"] or "",
+                   "interrupted": True, "turn_tokens": turn,
+                   "session_tokens": dict(SESSION)})
+            return
         calls = res["tool_calls"]
         am = {"role": "assistant", "content": res["content"] or ""}
         if calls:
@@ -2493,18 +2855,22 @@ def serve_main():
     CURRENT_SESSION["id"] = new_session_id()
     CURRENT_SESSION["created"] = _now()
     messages = [{"role": "system", "content": system_prompt()}]
+    threading.Thread(target=_serve_input_thread, daemon=True).start()
     _emit({"type": "ready", "name": NAME, "model": MODEL, "cwd": os.getcwd(),
            "sandbox": sandbox_label(), "tools": list(TOOLS),
-           "needs_key": not bool(API_KEY)})
+           "vision": bool(VISION_URL), "needs_key": not bool(API_KEY)})
     while True:
-        msg = _serve_read()
+        msg = _MAIN_Q.get()
         if msg is None:
             break
         t = msg.get("type")
         if t == "exit":
             break
         if t == "prompt":
-            content, attached = expand_mentions(msg.get("text", ""))
+            _INTERRUPT.clear()  # fresh turn — drop any stale interrupt
+            imgs = [(f"image-{i + 1}", du)
+                    for i, du in enumerate(msg.get("images") or [])]
+            content, attached = expand_mentions(msg.get("text", ""), extra_images=imgs)
             if attached:
                 _emit({"type": "info", "text": f"attached: {', '.join(attached)}"})
             messages.append({"role": "user", "content": content})

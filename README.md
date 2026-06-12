@@ -141,8 +141,15 @@ Press **`/`** at the prompt to open a live command menu (Claude-Code style): it 
 type, `↑`/`↓` move the highlight, `Tab`/`Enter` accept, `Esc` dismisses; a bare `/` also lists
 everything.
 
-Reference files with **`@path`** to attach their contents. Every `write_file`/`edit_file` is
-checkpointed, so **`/undo`** rolls back the last one.
+Reference files with **`@path`** to attach their contents — or an **image** (`@shot.png`,
+`.png/.jpg/.jpeg/.gif/.webp/.bmp`). The base model is text-only, so images are attached but only
+*interpreted* when you set `HERA_VISION_URL` to a vision endpoint (image turns route there).
+Every `write_file`/`edit_file` is checkpointed, so **`/undo`** rolls back the last one.
+
+As Hera works it **narrates each step** (`→ Editing app.py`) above the tool card, alongside its
+streaming reasoning. Before any edit it prints the **full proposed diff**, and the approval
+prompt offers **`[t]ype feedback`** — pick it to send the model an instruction instead of a plain
+yes/no. Press **`ESC`** while Hera is generating to **interrupt** the turn (history is kept).
 
 ## Sessions & resume
 
@@ -220,6 +227,8 @@ into its system prompt and follows its conventions — like Claude Code's `CLAUD
 | `HERA_YOLO` | `0` | `1` = auto-approve every tool call (sandbox only) |
 | `HERA_MAX_STEPS` | `25` | Max tool round-trips per message |
 | `HERA_HIDE_REASONING` | `0` | `1` = don't stream the model's thinking |
+| `HERA_VISION_URL` | _(empty)_ | Vision endpoint for attached images. Unset → images attached but not interpreted (text-only model) |
+| `HERA_VISION_MODEL` | = `HERA_MODEL` | Model name at `HERA_VISION_URL` |
 | `HERA_NO_COLOR` | `0` | `1` = disable colour/styling (also honours `NO_COLOR`) |
 | `HERA_FORCE_COLOR` | `0` | `1` = force colour even when output isn't a TTY |
 | `HERA_SANDBOX` | `auto` | `run_bash` sandbox: `auto` / `bwrap` / `unshare` / `none` |
