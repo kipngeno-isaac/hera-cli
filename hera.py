@@ -123,7 +123,7 @@ def save_config(updates):
         pass
 
 
-VERSION = "0.6.1"   # bump on every released change; mirrored in cli/VERSION
+VERSION = "0.6.2"   # bump on every released change; mirrored in cli/VERSION
 NAME    = _env("HERA_NAME", default="Hera")
 # No server host is baked into the source (so this repo can be public, revealing
 # neither key nor host). Each user supplies the endpoint + key once — via env
@@ -878,7 +878,7 @@ def tool_web_search(query, max_results=6):
     return "\n".join(results)
 
 
-def tool_web_fetch(url, max_chars=6000):
+def tool_web_fetch(url, max_chars=9000):
     """Fetch a web page and return its readable text content."""
     if not re.match(r"https?://", url):
         url = "https://" + url
@@ -1626,10 +1626,12 @@ if WEB_ENABLED:
     TOOL_SCHEMAS.append({"type": "function", "function": {
         "name": "web_fetch",
         "description": ("Fetch a web page (by URL, e.g. one returned by web_search) "
-                        "and return its readable text, so you can read docs or articles."),
+                        "and return its readable text, so you can read docs or articles. "
+                        "Fetch the top few relevant results, not just one, so you can "
+                        "corroborate and synthesize before answering."),
         "parameters": {"type": "object", "properties": {
             "url":       {"type": "string", "description": "Page URL to fetch"},
-            "max_chars": {"type": "integer", "description": "Max characters to return (default 6000)"},
+            "max_chars": {"type": "integer", "description": "Max characters to return (default 9000)"},
         }, "required": ["url"]},
     }})
 
@@ -2082,9 +2084,16 @@ def system_prompt():
         "When the task is complete, give a brief summary of what you changed."
     )
     if WEB_ENABLED:
-        base += (" When you lack information — current facts, library or API docs, exact "
-                 "versions, an unfamiliar error — call web_search on your own initiative "
-                 "(then web_fetch a result if you need its full text) rather than guessing.")
+        base += (" You have live internet access. Whenever the answer depends on information you "
+                 "don't already hold — current events, recent releases, library or API docs, exact "
+                 "versions, an unfamiliar error message, anything time-sensitive — call web_search "
+                 "on your own initiative rather than guessing, then web_fetch the most relevant "
+                 "results to read their full text. Corroborate across two or more independent "
+                 "sources before you commit to an answer. Then synthesize what you actually read "
+                 "into a clear, direct answer in your own words — do not just paste snippets — and "
+                 "cite the sources inline as [1], [2] with a short 'Sources:' list of the URLs at "
+                 "the end. Treat freshly fetched pages as current ground truth over any older "
+                 "assumption you have, and say so if sources disagree or you couldn't verify a claim.")
     if AUTO_INSTALL:
         base += (" When the task needs a command-line tool that isn't installed, call "
                  "install_tool with the program name and a short reason; the user approves, "

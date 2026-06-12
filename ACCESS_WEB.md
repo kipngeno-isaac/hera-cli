@@ -52,6 +52,21 @@ Your chats are private to your account; nothing is shared with other users.
 That's it for normal chat use. Standard Open WebUI features (rename/organize chats, regenerate,
 edit, upload files for RAG, etc.) all work and stay within your account.
 
+### Live web search (current info)
+
+The model can pull **live data from the internet** so it isn't limited to what it was trained on.
+In the message box, click the **🌐 globe / Web Search** toggle, then ask your question. Open WebUI
+searches the web (DuckDuckGo), fetches the top pages, feeds their full text to the model, and the
+answer comes back **with inline citations** you can click to open the source.
+
+- Use it for anything **current or factual**: recent releases, today's news, library/API docs,
+  "what's the latest version of X", error messages, etc.
+- Leave it **off** for ordinary chat/coding to keep replies fast — searching adds a few seconds.
+- The model reads the fetched pages and **synthesizes** an answer; the citations show what it used.
+
+> Admins: this is enabled stack-wide (`ENABLE_WEB_SEARCH`, engine `duckduckgo`, no API key). See
+> [§4](#4-for-the-admin) to change the engine or result count.
+
 > **Don't see the model in the selector?** You're probably still `pending` — ask the admin to
 > approve you. If you *are* approved and it's still missing, the inference server may be
 > reloading; wait a moment and refresh (admins: see [§4](#4-for-the-admin)).
@@ -105,6 +120,14 @@ Panel**).
   on every request, with a ~60 s cache).
 - **Model wiring:** Open WebUI talks to the inference server via `OPENAI_API_BASE_URL` /
   `OPENAI_API_KEY` (set in `docker-compose.yml`); users never see that shared key.
+- **Web search:** enabled stack-wide so users can browse from chat (the 🌐 toggle). Configured in
+  `docker-compose.yml`: `ENABLE_WEB_SEARCH=true`, `WEB_SEARCH_ENGINE=duckduckgo` (needs no API
+  key), `WEB_SEARCH_RESULT_COUNT=5`, and `BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL=true` (the
+  fetched pages are injected straight into the model's 32k context — no embedding model to host,
+  and the model sees the full sources). The per-role **Web Search** permission
+  (`USER_PERMISSIONS_FEATURES_WEB_SEARCH`) is on. To change the engine, result count, or switch to
+  an API-key search provider on a running instance, use *Admin Panel → Settings → Web Search*
+  (PersistentConfig — editing the env var afterwards won't take; see the gotcha below).
 
 > **⚠ PersistentConfig gotcha (important).** Open WebUI persists most of these settings
 > (`ENABLE_SIGNUP`, `DEFAULT_USER_ROLE`, the API-key permission, model access, etc.) into its

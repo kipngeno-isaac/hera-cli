@@ -299,12 +299,12 @@ A `HERA.md` (or `AGENTS.md`/`AGENT.md`) in the launch directory is loaded into t
 
 ## 6. Keeping Hera up to date
 
-The current release is **0.6.1**. On launch Hera checks the published version (at most once a
+The current release is **0.6.2**. On launch Hera checks the published version (at most once a
 day, fail-silent — it never blocks or errors startup). If a newer one is out, you'll see a
 one-line notice like:
 
 ```
-↑ update available: Hera 0.6.1 (you have 0.6.0)
+↑ update available: Hera 0.6.2 (you have 0.6.1)
   re-run the installer, or:  curl -fsSL <download_url> -o "$(command -v hera || echo ~/.local/bin/hera)"
 ```
 

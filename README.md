@@ -249,11 +249,11 @@ into its system prompt and follows its conventions — like Claude Code's `CLAUD
 
 ## Updating
 
-Current release: **0.6.1**. On launch Hera checks the published version (at most once a day,
+Current release: **0.6.2**. On launch Hera checks the published version (at most once a day,
 fail-silent) and prints a one-line notice when a newer one is out:
 
 ```
-↑ update available: Hera 0.6.1 (you have 0.6.0)
+↑ update available: Hera 0.6.2 (you have 0.6.1)
   re-run the installer, or:  curl -fsSL <download_url> -o "$(command -v hera || echo ~/.local/bin/hera)"
 ```
 
