@@ -13,22 +13,40 @@ graphical surface.
 
 ---
 
+## 0. What you need first
+
+| Thing | Value |
+|---|---|
+| **`<HOST>`** | The server address your admin gives you (IP or hostname). |
+| VS Code or Cursor | 1.75.0 or newer. |
+| **The `hera` CLI** | Installed and on your `PATH` — the extension *shells out to it* (it is not a standalone agent). See [step 1](#1-prerequisites). |
+| An approved account + API key | A `user`/`admin` Open WebUI account and a personal `sk-…` key. |
+| **Node.js + npm** | Only if you package a `.vsix` yourself ([step 2](#2-install-the-extension)). Not needed for the F5 "run from source" path. |
+
+The extension is **a GUI over the same `hera` CLI** — install the CLI first, and the editor just
+gives it a chat panel. If the CLI works in a terminal, the extension will too.
+
+---
+
 ## 1. Prerequisites
 
 1. **An approved account + API key.** Log in at `http://<HOST>:3000` and create an API key under
-   **Settings → Account → API keys** (ask the admin to approve your account first).
+   **Settings → Account → API keys** (ask the admin to approve your account first — see
+   [`ACCESS_WEB.md`](ACCESS_WEB.md)).
 2. **The `hera` CLI installed** and on your `PATH` (the extension shells out to it):
    ```bash
    HERA_SERVER=http://<HOST>:8081 bash <(curl -fsSL http://<HOST>:8081/install.sh)
    ```
-   (Or set `hera.command` in the extension settings to an absolute path.)
+   (Or set `hera.command` in the extension settings to an absolute path — e.g.
+   `~/.local/bin/hera`, or on Windows the full path to your `hera.py` launcher.) Confirm it's
+   found: `hera --version` should print `Hera 0.6.1`.
 3. **Credentials.** Easiest: **run `hera` once in a terminal and paste your key** (see
    [`ACCESS_CLI.md`](ACCESS_CLI.md)). That saves `~/.config/hera/config.json` (endpoint + key +
    your resolved account email), and `hera --serve` — what the extension drives — reads that file
    automatically, so the extension just works with no settings.
    - Prefer to keep it all in the editor? Set `hera.serverUrl` + `hera.apiKey` in the extension
      settings instead (below). These override the config file.
-4. **`bubblewrap`** (optional, recommended) for full shell sandboxing.
+4. **`bubblewrap`** (optional, recommended, Linux only) for full shell sandboxing.
 
 ---
 
@@ -41,13 +59,14 @@ distributed as source (no Marketplace listing), so you load it locally:
 1. Open the `ide/vscode-hera/` folder in VS Code / Cursor.
 2. Press **F5** → *Run Extension*. A second editor window opens with Hera loaded.
 
-**Or package + install a `.vsix`:**
+**Or package + install a `.vsix`** (persists across windows; needs **Node.js + npm**):
 ```bash
 cd ide/vscode-hera
-npm install -g @vscode/vsce
+npm install -g @vscode/vsce        # one-time: the VS Code packaging tool
 vsce package                       # produces hera-cli-0.2.0.vsix
 ```
-Then in VS Code: **Extensions → ⋯ → Install from VSIX…** and pick the file.
+Then in VS Code: **Extensions → ⋯ (top-right) → Install from VSIX…** and pick the file. In Cursor
+the menu is the same. (You can also install from the CLI: `code --install-extension hera-cli-0.2.0.vsix`.)
 
 ---
 
@@ -71,18 +90,32 @@ Open **Settings → Extensions → Hera** (or edit `settings.json`):
   shell's `HERA_API_KEY`).
 - Your key is your identity — sessions are labelled by the account it resolves to, so there's no
   `HERA_USER` to set. Use `hera.extraEnv` only for extras like `HERA_YOLO` or `HERA_EMBED_URL`.
+- After changing any `hera.*` setting, **reopen the chat panel** (or run *Developer: Reload
+  Window*) so the freshly spawned `hera --serve` picks up the new value.
+
+| Setting | Maps to | Use it for |
+|---|---|---|
+| `hera.command` | the executable | Path to `hera` if it's not on `PATH`. |
+| `hera.serverUrl` | `HERA_API_URL` | Identity proxy `http://<HOST>:8090/v1` (else from saved config). |
+| `hera.apiKey` | `HERA_API_KEY` | Your `sk-…` key (else from saved config / shell env). |
+| `hera.showDiffs` | — | Show the proposed-edit diff before applying (default `true`). |
+| `hera.visionUrl` | `HERA_VISION_URL` | A vision endpoint so attached images are actually analyzed. |
+| `hera.extraEnv` | any `HERA_*` | Extras like `HERA_YOLO`, `HERA_EMBED_URL`, `HERA_MAX_STEPS`. |
 
 ---
 
 ## 4. Using it
 
+Open the **Command Palette** (`Ctrl/Cmd+Shift+P`) and type "Hera", or use the keys / right-click menu:
+
 | Command (Command Palette / keys) | What it does |
 |---|---|
 | **Hera: Open chat panel** (`Ctrl/Cmd+Alt+H`) | Native chat webview — streaming, tool cards, approval buttons |
+| **Hera: Ask about current file** (`Ctrl/Cmd+Alt+K`) | Quick prompt with the active file attached as `@file` (right-click menu too) |
+| **Hera: Ask about selection** | Quick prompt scoped to the selected line range (right-click menu) |
 | **Hera: Ask with file context (LSP)** | Sends your question + the active file's symbols & diagnostics |
-| **Hera: Ask about current file / selection** | Quick prompt with `@file` / a line range (right-click menu too) |
 | **Hera: Start terminal session** | Runs `hera` in an integrated terminal (full TUI) |
-| **Hera: Resume last session** | `hera --continue` in a terminal |
+| **Hera: Resume last session (terminal)** | `hera --continue` in a terminal |
 
 **The chat panel:**
 - The model's **thinking** streams in a block that's open while it works, then collapses; before
@@ -123,7 +156,9 @@ same per-user auth via your Open WebUI key.
 | Chat shows `⚠ no API key` | Set `hera.apiKey` (or `HERA_API_KEY` in your shell). |
 | `401` / nothing comes back | Key wrong/expired or account not approved; recreate the key, ask admin to approve. |
 | No diff opens on edits | Set `hera.showDiffs: true`. |
+| Changed a setting, no effect | Reopen the chat panel or run *Developer: Reload Window* — the setting is read when `hera --serve` spawns. |
 | "Ask with context" empty | The file's language needs a language extension installed (provides symbols/diagnostics). |
+| `vsce: command not found` (packaging) | Install Node.js + npm, then `npm install -g @vscode/vsce`. Or skip packaging and use the **F5** run-from-source path. |
 
 ---
 

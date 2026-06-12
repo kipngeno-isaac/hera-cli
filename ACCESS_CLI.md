@@ -12,6 +12,31 @@ model's reasoning, tracks tokens, and saves resumable per-user sessions.
 
 ---
 
+## 0. What you need first
+
+| Thing | Value |
+|---|---|
+| **`<HOST>`** | The server address your admin gives you (IP or hostname). Substitute it everywhere `<HOST>` appears. |
+| **An approved account + API key** | A `user`/`admin` Open WebUI account and a personal `sk-…` key (see step 1). |
+| **Python 3.7+** | The only runtime requirement. The installer adds the one library (`requests`). |
+| **`bubblewrap`** *(optional)* | Linux-only; gives `run_bash` full filesystem confinement. Without it Hera falls back to a weaker sandbox. |
+
+Ports you may touch: **`:8081`** download host (installer + `hera.py`), **`:8090`** the identity
+proxy Hera actually calls (`/v1`, `/whoami`, `/health`), **`:3000`** the web UI where you mint your
+key. The installer derives `:8090` from the `:8081` host automatically, so normally you only ever
+type the `:8081` one-liner.
+
+### TL;DR (already approved, Linux/macOS)
+
+```bash
+HERA_SERVER=http://<HOST>:8081 bash <(curl -fsSL http://<HOST>:8081/install.sh)
+cd ~/my-project && hera        # paste your sk-… key once — done
+```
+
+The rest of this guide explains each step, Windows/offline installs, and every option.
+
+---
+
 ## 1. Get access (you need an account)
 
 Hera is per-user: every user is a real **Open WebUI account** tied to your email, and the admin
@@ -23,6 +48,14 @@ must approve you.
 
 That key authenticates you on **both** the web UI and the CLI, and keeps your context separate
 from everyone else's.
+
+> **Sanity-check the server is reachable** before installing (optional):
+> ```bash
+> curl http://<HOST>:8090/health           # → {"status": "ok"}
+> curl -H "Authorization: Bearer sk-…" http://<HOST>:8090/whoami   # → {"email": "...", "role": "user"}
+> ```
+> A `200` from `/health` means the proxy is up; a good `/whoami` means your key is valid **and**
+> approved. A `403` there means your account is still `pending` (ask the admin); `401` means a bad key.
 
 ---
 
@@ -76,8 +109,22 @@ your `PATH`. Optionally install `bubblewrap` (`sudo apt install bubblewrap`) for
 The repo ships **no key and no host** (that's why it can be public) — so installed this way Hera
 also asks for the endpoint on first run (the identity proxy, `http://<HOST>:8090/v1`).
 
-Windows: install Python, `pip install requests`, download `hera.py` from the raw URL above, then
-`python hera.py`.
+**Windows** (no `bash`/`curl <(…)`, so the one-liner doesn't apply — do it manually):
+
+```powershell
+py -m pip install requests
+# download hera.py somewhere on your PATH, e.g. into a folder you control:
+curl.exe -fsSL https://raw.githubusercontent.com/jones0011738/hera-cli/main/hera.py -o hera.py
+py hera.py
+```
+
+On Windows the config lives at `%USERPROFILE%\.config\hera\config.json` and sessions under
+`%USERPROFILE%\.config\hera\sessions\`. `bubblewrap` doesn't exist on Windows, so `run_bash`
+runs with `HERA_SANDBOX=none` (unconfined) — keep the approval prompts on. The first run still
+asks for the endpoint (`http://<HOST>:8090/v1`) and your key, then saves both.
+
+**macOS:** same one-liner as Linux. There's no `bubblewrap` on macOS, so `run_bash` uses the
+weaker fallback or `none`; everything else is identical.
 </details>
 
 ---
