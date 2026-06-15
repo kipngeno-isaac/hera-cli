@@ -233,6 +233,14 @@ and `/auto off` to stop (back to `read`). `/auto` alone shows the current level.
 permission rule, **plan mode**, and `PreToolUse` hooks still take precedence even at `all`. Preset
 with `HERA_AUTO_MODE=read|edit|all`.
 
+## Verify-your-work loop
+
+Like Claude Code / Codex, Hera **runs the code it writes**: after editing a code file it verifies the
+change (runs the tests/build, or executes the affected file), and if it fails it reads the error,
+fixes the cause, and re-runs — repeating until it passes or it's blocked. It does the same when you
+ask it to *run a project*. Verification commands and fixes use the normal approval prompts (or run
+unattended under `/auto`). Disable with `HERA_NO_VERIFY=1`.
+
 ## Plan mode, to-dos & cost
 
 For multi-step work Hera keeps a live **to-do checklist** (`todo_write`; ○ → ▸ → ✔, reprint with
@@ -290,6 +298,7 @@ the live catalog the proxy is serving.
 | `HERA_MAX_STEPS` | `25` | Max tool round-trips per message |
 | `HERA_HIDE_REASONING` | `0` | `1` = don't stream the model's thinking |
 | `HERA_PLAN` | `0` | `1` = start in plan mode (propose before editing) |
+| `HERA_NO_VERIFY` | `0` | `1` = don't auto-run/verify code after edits |
 | `HERA_AUTO_MODE` | `read` | Auto-approve level: `read` / `edit` / `all` (per-project; `/auto` overrides & persists) |
 | `HERA_NO_SUGGESTIONS` | `0` | `1` = don't print "Next steps" tips after a task |
 | `HERA_PRICE_IN` / `HERA_PRICE_OUT` | `0` | USD per 1M input/output tokens → show `$` cost |
@@ -316,11 +325,11 @@ the live catalog the proxy is serving.
 
 ## Updating
 
-Current release: **0.8.7**. On launch Hera checks the published version (at most once a day,
+Current release: **0.8.8**. On launch Hera checks the published version (at most once a day,
 fail-silent) and prints a one-line notice when a newer one is out:
 
 ```
-↑ update available: Hera 0.8.7 (you have 0.6.1)
+↑ update available: Hera 0.8.8 (you have 0.6.1)
   re-run the installer, or:  curl -fsSL <download_url> -o "$(command -v hera || echo ~/.local/bin/hera)"
 ```
 

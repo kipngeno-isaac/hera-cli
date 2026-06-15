@@ -17,6 +17,7 @@ Optional:       HERA_MODEL          (default qwen3.6-35b-a3b)
                 HERA_MAX_STEPS      max tool round-trips per message (default 25)
                 HERA_HIDE_REASONING=1   don't stream the model's thinking
                 HERA_NO_SUGGESTIONS=1   don't print "Next steps" tips after a task
+                HERA_NO_VERIFY=1    don't auto-run/verify code after editing it
                 HERA_PLAN=1         start in plan mode (investigate & propose,
                                     no edits until you /plan to approve)
                 HERA_PRICE_IN / HERA_PRICE_OUT   USD per 1M tokens → show $ cost
@@ -152,7 +153,7 @@ def save_config(updates):
         pass
 
 
-VERSION = "0.8.7"   # bump on every released change; mirrored in cli/VERSION
+VERSION = "0.8.8"   # bump on every released change; mirrored in cli/VERSION
 NAME    = _env("HERA_NAME", default="Hera")
 # No server host is baked into the source (so this repo can be public, revealing
 # neither key nor host). Each user supplies the endpoint + key once — via env
@@ -252,6 +253,26 @@ def _save_auto_mode(mode):
 
 
 AUTO_MODE = _load_auto_mode()
+
+# Auto-verify: after a turn that wrote/edited code but didn't run anything, Hera
+# nudges itself once to run it (tests/build/execute) and fix failures — the
+# "verify your work" loop Claude Code/Codex do. Disable with HERA_NO_VERIFY=1.
+AUTO_VERIFY = not _cfg_truthy("HERA_NO_VERIFY", key="no_verify", default=False)
+_CODE_EXTS = (".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java", ".kt",
+              ".c", ".h", ".cc", ".cpp", ".hpp", ".rb", ".php", ".sh", ".bash",
+              ".sql", ".html", ".css", ".scss", ".vue", ".svelte", ".swift",
+              ".lua", ".r", ".jl", ".pl", ".cs", ".scala", ".dart", ".ex", ".exs")
+_VERIFY_NUDGE = (
+    "[auto-verify] You changed code but haven't run it. Verify the change actually works now: "
+    "run the project's tests/build/linter if present, or otherwise execute the affected file or "
+    "function (e.g. `pytest`, `npm test`, `python <file>`, `node <file>`, `go build ./...`). "
+    "If it fails, read the error, fix the root cause, and re-run — repeat until it passes or you're "
+    "genuinely blocked (then say what's blocking). Use run_bash; the user approves commands.")
+
+
+def _is_code_file(path):
+    return str(path or "").lower().endswith(_CODE_EXTS)
+
 
 # In-task to-do list (Claude-Code-style). Items: {"content": str, "status": ...}.
 TODOS = []
@@ -1614,7 +1635,10 @@ def undo_last():
 def run_agent(messages, spinner):
     """Drive the reason→act loop until the model produces a final answer."""
     turn_tokens = 0
-    did_work = False   # did this turn actually use tools? (gates next-step tips)
+    did_work = False     # did this turn actually use tools? (gates next-step tips)
+    edited_code = False  # wrote/edited a code file
+    ran_command = False  # ran a shell command (≈ self-verified)
+    verified = False     # already injected the auto-verify nudge for this task
     _maybe_auto_compact(messages)
     for step in range(MAX_STEPS):
         spinner.start()
@@ -1652,6 +1676,16 @@ def run_agent(messages, spinner):
         messages.append(assistant_msg)
 
         if not calls:
+            # Verify-your-work loop: if code was written but never run, nudge once
+            # to test it (and fix failures) before declaring the task done.
+            if (AUTO_VERIFY and edited_code and not ran_command and not verified
+                    and not PLAN_MODE):
+                verified = True
+                edited_code = False
+                messages.append({"role": "user", "content": _VERIFY_NUDGE})
+                print(f"\n{DIM}  ⟳ auto-verify: making sure the changes actually run "
+                      f"(ESC to skip)…{R}")
+                continue
             print(f"\n{GREY}{'─' * 50}{R}")
             print(f"{GREY}  {turn_tokens} tok this turn · {SESSION['total']} session"
                   f"{_cost_suffix()}{R}\n")
@@ -1663,6 +1697,15 @@ def run_agent(messages, spinner):
         did_work = True
         for c in calls:
             output = _exec_call(c)
+            if c["name"] == "run_bash":
+                ran_command = True
+            elif c["name"] in _EDIT_TOOLS:
+                try:
+                    cargs = json.loads(c["arguments"] or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    cargs = {}
+                if _is_code_file(cargs.get("path", "")):
+                    edited_code = True
             messages.append({"role": "tool", "tool_call_id": c["id"], "content": output})
 
     print(f"\n{RED}[stopped] hit MAX_STEPS={MAX_STEPS} tool round-trips{R}\n")
@@ -2916,6 +2959,14 @@ def system_prompt():
     base += (" For any task with more than ~3 steps, call todo_write first to lay out the plan as "
              "a checklist, then update it as you go — mark each step completed and set the next one "
              "in_progress, keeping exactly one in_progress at a time. Skip it for trivial requests.")
+    if AUTO_VERIFY and not PLAN_MODE:
+        base += (" ALWAYS VERIFY YOUR WORK: after writing or modifying code, actually run it before "
+                 "saying you're done — run the project's tests/build/linter if present, or otherwise "
+                 "execute the affected file or function (pytest, npm test/build, python <file>, "
+                 "node <file>, go build ./…, etc.). If verification fails, read the error, fix the "
+                 "root cause, and re-run; repeat until it passes or you're genuinely blocked (then "
+                 "explain what's blocking). When asked to run a project or codebase, get it actually "
+                 "running and fix what breaks. Prefer the smallest relevant check.")
     if PLAN_MODE:
         base += (" PLAN MODE IS ON. Investigate with read-only tools only — do NOT modify files, "
                  "run state-changing commands, or install anything yet. When you have a concrete "
@@ -3774,7 +3825,8 @@ def _serve_exec(c):
 
 def _serve_run(messages):
     turn = 0
-    did_work = False   # used tools this turn? gates the next-step suggestions
+    did_work = False
+    edited_code = ran_command = verified = False
     _maybe_auto_compact(messages, emit=_emit)
     for _ in range(MAX_STEPS):
         res = _serve_stream(messages)
@@ -3797,6 +3849,15 @@ def _serve_run(messages):
                                 for x in calls]
         messages.append(am)
         if not calls:
+            # Verify-your-work loop (before turn_end, so the panel stays busy
+            # through the check): code changed but nothing ran → nudge once.
+            if (AUTO_VERIFY and edited_code and not ran_command and not verified
+                    and not PLAN_MODE):
+                verified = True
+                edited_code = False
+                messages.append({"role": "user", "content": _VERIFY_NUDGE})
+                _emit({"type": "info", "text": "auto-verify: running the changes to make sure they work…"})
+                continue
             _emit({"type": "turn_end", "content": res["content"] or "",
                    "turn_tokens": turn, "session_tokens": dict(SESSION),
                    "cost": _session_cost()})
@@ -3812,6 +3873,15 @@ def _serve_run(messages):
         did_work = True
         for c in calls:
             out = _serve_exec(c)
+            if c["name"] == "run_bash":
+                ran_command = True
+            elif c["name"] in _EDIT_TOOLS:
+                try:
+                    cargs = json.loads(c["arguments"] or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    cargs = {}
+                if _is_code_file(cargs.get("path", "")):
+                    edited_code = True
             messages.append({"role": "tool", "tool_call_id": c["id"], "content": out})
     _emit({"type": "turn_end", "content": "[stopped: hit MAX_STEPS]",
            "turn_tokens": turn, "session_tokens": dict(SESSION)})

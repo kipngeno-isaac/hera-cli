@@ -301,6 +301,15 @@ Tired of approving every step? Set an **auto mode** with `/auto`, just like Clau
 permission rule, **plan mode**, and `PreToolUse` hooks still block or prompt even at `all`. (You
 can also preset it with `HERA_AUTO_MODE=read|edit|all`.)
 
+### Verify-your-work loop
+
+Like Claude Code / Codex, Hera **runs the code it writes**. After editing a code file it verifies the
+change actually works — runs the project's tests/build/linter, or executes the affected file — and if
+it fails, it reads the error, fixes the cause, and re-runs, repeating until it passes or it's blocked.
+It also does this when you ask it to *"run this project"*: it gets it running and fixes what breaks.
+Those verification commands and fixes go through the **normal approval prompts** (or run unattended
+under `/auto`). Disable with `HERA_NO_VERIFY=1`.
+
 ### Plan mode, to-dos, and next-step tips
 
 Like Claude Code, Hera lays out a **to-do checklist** (`todo_write`) for multi-step tasks and
@@ -367,6 +376,7 @@ chat is using.
 | `HERA_MAX_STEPS` | `25` | Max tool round-trips per message. |
 | `HERA_HIDE_REASONING` | `0` | `1` = don't stream the model's thinking. |
 | `HERA_PLAN` | `0` | `1` = start in plan mode (propose before editing). |
+| `HERA_NO_VERIFY` | `0` | `1` = don't auto-run/verify code after edits (verify-your-work loop). |
 | `HERA_AUTO_MODE` | `read` | Auto-approve level: `read` / `edit` / `all` (per-project default; `/auto` overrides & persists). |
 | `HERA_NO_SUGGESTIONS` | `0` | `1` = don't print "Next steps" tips after a task. |
 | `HERA_PRICE_IN` / `HERA_PRICE_OUT` | `0` | USD per 1M input/output tokens → show `$` cost. |
@@ -387,12 +397,12 @@ chat is using.
 
 ## 6. Keeping Hera up to date
 
-The current release is **0.8.7**. On launch Hera checks the published version (at most once a
+The current release is **0.8.8**. On launch Hera checks the published version (at most once a
 day, fail-silent — it never blocks or errors startup). If a newer one is out, you'll see a
 one-line notice like:
 
 ```
-↑ update available: Hera 0.8.7 (you have 0.6.1)
+↑ update available: Hera 0.8.8 (you have 0.6.1)
   re-run the installer, or:  curl -fsSL <download_url> -o "$(command -v hera || echo ~/.local/bin/hera)"
 ```
 
@@ -404,7 +414,7 @@ $ hera doctor
 
 ▌ Hera doctor  · update + health check
 
-  ✓ update       updated v0.6.1 → v0.8.7  ·  ~/.local/bin/hera
+  ✓ update       updated v0.6.1 → v0.8.8  ·  ~/.local/bin/hera
   ✓ endpoint     http://<HOST>:8090/v1
   ✓ api key      set
   ✓ model        qwen3.6-35b-a3b — HTTP 200

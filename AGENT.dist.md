@@ -14,7 +14,11 @@ endpoint. It runs the model in a reason→act loop with real tools and a permiss
 aiming for Claude-Code-class behavior.
 
 ## Latest changes
-- **Version:** `0.8.7`.
+- **Version:** `0.8.8`.
+- **Verify-your-work loop** — Hera runs/tests the code it writes and fixes failures (Claude-Code/
+  Codex style). System prompt directive (primary) + a backstop: `run_agent`/`_serve_run` track
+  `edited_code`/`ran_command`; if code was edited but nothing ran, inject `_VERIFY_NUDGE` once to
+  run+fix it. Verify runs/fixes use the normal approval gate. `AUTO_VERIFY` / `HERA_NO_VERIFY`.
 - **Claude-Code plan-mode approval flow** — new `exit_plan_mode(plan)` tool the model calls when its
   plan is ready; `_confirm_plan` shows it and asks [1] yes / [2] yes + auto-accept edits / [3] keep
   planning (pluggable `_PLAN_APPROVER`; terminal prompt or serve `plan_review`/`plan_decision` →
@@ -49,7 +53,7 @@ aiming for Claude-Code-class behavior.
   (`_is_context_overflow`), `compact_history()`, and retry once; `_maybe_auto_compact` also fires on
   the server's real last prompt-token count (`_LAST_PROMPT_TOKENS`). No more raw
   `400 … exceeds the available context size`.
-- **Claude-Code parity pass (0.7.0 → 0.8.7):**
+- **Claude-Code parity pass (0.7.0 → 0.8.8):**
   - **To-do tracking** — `todo_write` tool maintains a live checklist (CLI render + `todos`
     serve event → "Plan" block in VS Code). The system prompt nudges it for multi-step tasks.
   - **End-of-task next-step tips** — `_generate_suggestions` (called with `enable_thinking:false`)
