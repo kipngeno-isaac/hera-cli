@@ -140,8 +140,9 @@ Open the **Command Palette** (`Ctrl/Cmd+Shift+P`) and type "Hera", or use the ke
   it shows as a thumbnail chip. The base model is text-only, so set `hera.visionUrl` (a vision
   endpoint) to actually analyze images — otherwise they're attached but not interpreted.
 - The status line at the top shows **who you're signed in as** (👤 name + email, resolved from your
-  key) along with the model and tools. To switch users, change the `hera.apiKey` setting (or clear
-  it and use a different saved config) and reload the panel.
+  key) along with the model and tools. To switch users, click the **⎟ sign-out** button (⎋) in the
+  message bar: it forgets the key, asks for a different one, and reopens the panel as the new user.
+  (You can also just change the `hera.apiKey` setting and reload the panel.)
 - The **Auto** dropdown in the message bar sets the auto-approve level for the project —
   **read** (only reads run unattended), **edit** (also auto-approve file edits), or **all**
   (everything) — mirroring `/auto` in the CLI. It's remembered per project; switch back to **read**
