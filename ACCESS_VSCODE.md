@@ -44,7 +44,7 @@ automatically, or you can force one explicitly with `@skill:<id>` or `/skill <id
    ```
    (Or set `hera.command` in the extension settings to an absolute path — e.g.
    `~/.local/bin/hera`, or on Windows the full path to your `hera.py` launcher.) Confirm it's
-   found: `hera --version` should print `Hera 0.8.5`.
+   found: `hera --version` should print `Hera 0.8.6`.
 3. **Credentials.** Easiest: **run `hera` once in a terminal and paste your key** (see
    [`ACCESS_CLI.md`](ACCESS_CLI.md)). That saves `~/.config/hera/config.json` (endpoint + key +
    your resolved account email), and `hera --serve` — what the extension drives — reads that file

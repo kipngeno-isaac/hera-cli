@@ -152,7 +152,7 @@ def save_config(updates):
         pass
 
 
-VERSION = "0.8.5"   # bump on every released change; mirrored in cli/VERSION
+VERSION = "0.8.6"   # bump on every released change; mirrored in cli/VERSION
 NAME    = _env("HERA_NAME", default="Hera")
 # No server host is baked into the source (so this repo can be public, revealing
 # neither key nor host). Each user supplies the endpoint + key once — via env
@@ -2375,6 +2375,19 @@ def list_sessions():
     return out
 
 
+def _same_project(s):
+    """True if saved session `s` was started in the current working directory."""
+    try:
+        return os.path.realpath(s.get("cwd") or "") == os.path.realpath(os.getcwd())
+    except OSError:
+        return False
+
+
+def project_sessions():
+    """Saved sessions that belong to the current project (cwd), newest first."""
+    return [s for s in list_sessions() if _same_project(s)]
+
+
 def load_session(sid):
     """Resolve `sid` (exact id, prefix, or '__latest__') to a saved session."""
     sessions = list_sessions()
@@ -2382,7 +2395,10 @@ def load_session(sid):
         return None
     chosen = None
     if sid in ("__latest__", "", None):
-        chosen = sessions[0]
+        # `hera --continue` resumes the latest conversation *in this project*,
+        # falling back to the global latest if this project has none yet.
+        here = project_sessions()
+        chosen = here[0] if here else sessions[0]
     else:
         for s in sessions:
             if s.get("id") == sid:
@@ -2418,12 +2434,20 @@ def _session_label(s):
     return s.get("title") or _first_user(s.get("messages") or [])
 
 
-def print_sessions():
-    sessions = list_sessions()
+def print_sessions(project_only=False):
+    """List saved conversations. project_only → just this project's (for the
+    interactive `/sessions`); otherwise all of them (for `hera --list-sessions`)."""
+    alls = list_sessions()
+    sessions = [s for s in alls if _same_project(s)] if project_only else alls
     if not sessions:
-        print(f"\n{DIM}no saved conversations yet.{R}\n")
+        if project_only and alls:
+            print(f"\n{DIM}no conversations in this project yet "
+                  f"({len(alls)} in other projects — `hera --list-sessions` to see all).{R}\n")
+        else:
+            print(f"\n{DIM}no saved conversations yet.{R}\n")
         return
-    print(f"\n{BOLD}Saved conversations{R} {DIM}(newest first) — `/resume` to pick one, "
+    scope = "in this project" if project_only else "all projects"
+    print(f"\n{BOLD}Saved conversations{R} {DIM}({scope}, newest first) — `/resume` to pick one, "
           f"or `hera --continue` for the latest{R}")
     for i, s in enumerate(sessions[:20], 1):
         msgs = s.get("messages", [])
@@ -2431,6 +2455,9 @@ def print_sessions():
         proj = os.path.basename((s.get("cwd") or "").rstrip("/")) or "~"
         print(f"  {ACCENT}{i:>2}.{R} {_session_label(s)}")
         print(f"      {DIM}{(s.get('updated','') or '')[:16]} · {nturns} message(s) · {proj}/{R}")
+    other = len(alls) - len(sessions)
+    if project_only and other > 0:
+        print(f"  {DIM}… {other} more in other projects — `hera --list-sessions` to see all{R}")
     print()
 
 
@@ -2454,19 +2481,24 @@ def _switch_to(messages, s):
 
 
 def resume_picker(messages):
-    """Show recent sessions and let the user pick one to resume in place."""
-    sessions = list_sessions()
+    """Show this project's recent conversations and let the user pick one."""
+    all_sessions = list_sessions()
+    sessions = [s for s in all_sessions if _same_project(s)]
     if not sessions:
-        print(f"\n{DIM}no saved sessions yet.{R}\n")
+        other = len(all_sessions)
+        if other:
+            print(f"\n{DIM}no conversations in this project yet "
+                  f"({other} in other projects — `hera --list-sessions` to see all).{R}\n")
+        else:
+            print(f"\n{DIM}no saved conversations yet.{R}\n")
         return
     shown = sessions[:20]
-    print(f"\n{BOLD}Resume a conversation{R} {DIM}(newest first){R}")
+    print(f"\n{BOLD}Resume a conversation{R} {DIM}(this project, newest first){R}")
     for i, s in enumerate(shown, 1):
         msgs = s.get("messages", [])
         nturns = sum(1 for m in msgs if m.get("role") == "user")
-        proj = os.path.basename((s.get("cwd") or "").rstrip("/")) or "~"
         print(f"  {ACCENT}{i:>2}.{R} {_session_label(s)}")
-        print(f"      {DIM}{(s.get('updated','') or '')[:16]} · {nturns} message(s) · {proj}/{R}")
+        print(f"      {DIM}{(s.get('updated','') or '')[:16]} · {nturns} message(s){R}")
     try:
         ans = input(f"\n{BOLD}  number to resume (Enter to cancel):{R} ").strip()
     except (EOFError, KeyboardInterrupt):
@@ -4073,7 +4105,7 @@ def _repl(messages, spinner):
             print(f"{DIM}Fresh session started for the new account.{R}\n")
             continue
         if cmd == "/sessions":
-            print_sessions()
+            print_sessions(project_only=True)
             continue
         if cmd in ("/resume", "/history"):
             resume_picker(messages)

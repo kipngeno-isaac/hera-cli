@@ -266,22 +266,24 @@ routed there automatically.
 ### Sessions & resume
 
 Conversations auto-save under `~/.config/hera/sessions/<you>/`. The friendliest way back in is
-**`/resume`** — like Claude Code, it lists your recent conversations **by their first question** (and
-the project folder), and you pick one **by number**; no ID to remember:
+**`/resume`** — like Claude Code, it lists the conversations **from the project you're in** by their
+**first question**, and you pick one **by number**; no ID to remember:
 
 ```
-Resume a conversation (newest first)
+Resume a conversation (this project, newest first)
    1. How do I add OAuth login to my Flask app
-      2026-06-15 06:00 · 4 message(s) · webapp/
-   2. Write a bash script to rotate logs
-      2026-06-15 05:00 · 2 message(s) · scripts/
+      2026-06-15 06:00 · 4 message(s)
+   2. Refactor the auth middleware
+      2026-06-15 05:00 · 2 message(s)
 
   number to resume (Enter to cancel):
 ```
 
-`/sessions` prints the same list; from the shell, `hera --continue` reopens the latest and
-`hera --list-sessions` shows them. The store is namespaced by the account your key resolves to, so
-users never share context on one machine.
+`/resume` and `/sessions` are **scoped to the current project** (the directory you launched in), so
+you only see *this* project's history (with a note if you have conversations elsewhere). `hera
+--continue` reopens the latest **in this project**; `hera --list-sessions` shows **all** projects,
+and `hera --resume <id>` still works for any conversation. The store is namespaced by the account
+your key resolves to, so users never share context on one machine.
 
 ### Auto-approve modes (per project)
 
@@ -370,12 +372,12 @@ chat is using.
 
 ## 6. Keeping Hera up to date
 
-The current release is **0.8.5**. On launch Hera checks the published version (at most once a
+The current release is **0.8.6**. On launch Hera checks the published version (at most once a
 day, fail-silent — it never blocks or errors startup). If a newer one is out, you'll see a
 one-line notice like:
 
 ```
-↑ update available: Hera 0.8.5 (you have 0.6.1)
+↑ update available: Hera 0.8.6 (you have 0.6.1)
   re-run the installer, or:  curl -fsSL <download_url> -o "$(command -v hera || echo ~/.local/bin/hera)"
 ```
 
@@ -387,7 +389,7 @@ $ hera doctor
 
 ▌ Hera doctor  · update + health check
 
-  ✓ update       updated v0.6.1 → v0.8.5  ·  ~/.local/bin/hera
+  ✓ update       updated v0.6.1 → v0.8.6  ·  ~/.local/bin/hera
   ✓ endpoint     http://<HOST>:8090/v1
   ✓ api key      set
   ✓ model        qwen3.6-35b-a3b — HTTP 200

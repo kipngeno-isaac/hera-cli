@@ -14,7 +14,15 @@ endpoint. It runs the model in a reason→act loop with real tools and a permiss
 aiming for Claude-Code-class behavior.
 
 ## Latest changes
-- **Version:** `0.8.5`.
+- **Version:** `0.8.6`.
+- **Fixed recurring `400 "System message must be at the beginning"`** — the shared-skills injection
+  used to add a SECOND `system` message, which the Qwen template rejects; only fired when a skill
+  triggered. Now the skill block is **merged into the single leading system message** (server-side
+  in `shared-skills/runtime.py`, shared by the proxy and OWUI). Not a CLI-code change, but the
+  symptom users saw. (Distinct from the context-overflow 400, which already self-heals.)
+- **`/resume` scoped to the current project** — `_same_project`/`project_sessions`; `/resume` and
+  `/sessions` show only this project's conversations (`--list-sessions` still global, `--resume <id>`
+  any, `--continue` = latest in this project).
 - **Resume by first message, not ID** — sessions now store a `title` (first real user question,
   captured in `save_session` before any compaction; `_first_user` skips `[Summary…]`). `/resume`,
   `/sessions`, `_switch_to` and the startup resume line all show `_session_label(s)` (title +
@@ -36,7 +44,7 @@ aiming for Claude-Code-class behavior.
   (`_is_context_overflow`), `compact_history()`, and retry once; `_maybe_auto_compact` also fires on
   the server's real last prompt-token count (`_LAST_PROMPT_TOKENS`). No more raw
   `400 … exceeds the available context size`.
-- **Claude-Code parity pass (0.7.0 → 0.8.5):**
+- **Claude-Code parity pass (0.7.0 → 0.8.6):**
   - **To-do tracking** — `todo_write` tool maintains a live checklist (CLI render + `todos`
     serve event → "Plan" block in VS Code). The system prompt nudges it for multi-step tasks.
   - **End-of-task next-step tips** — `_generate_suggestions` (called with `enable_thinking:false`)

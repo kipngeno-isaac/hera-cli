@@ -163,20 +163,21 @@ yes/no. Press **`ESC`** while Hera is generating to **interrupt** the turn (hist
 ## Sessions & resume
 
 Conversations auto-save under `~/.config/hera/sessions/` after every turn. Inside a session,
-**`/resume`** (or `/sessions`) lists your recent conversations **by their first message** and the
-project folder — pick one **by number**, no ID to remember (just like Claude Code):
+**`/resume`** (or `/sessions`) lists the conversations **from the current project** by their
+**first message** — pick one **by number**, no ID to remember (just like Claude Code):
 
 ```
-Resume a conversation (newest first)
+Resume a conversation (this project, newest first)
    1. How do I add OAuth login to my Flask app
-      2026-06-15 06:00 · 4 message(s) · webapp/
-   2. Write a bash script to rotate logs
-      2026-06-15 05:00 · 2 message(s) · scripts/
+      2026-06-15 06:00 · 4 message(s)
+   2. Refactor the auth middleware
+      2026-06-15 05:00 · 2 message(s)
 ```
 
-From the shell: `hera --continue` reopens the latest, `hera --list-sessions` lists them, and
-`hera --resume <id>` still works for scripting. `/new` saves the current one and starts fresh;
-token totals are restored on resume.
+`/resume` and `/sessions` are **scoped to the project you launched in**. From the shell:
+`hera --continue` reopens the latest **in this project**, `hera --list-sessions` lists **all**
+projects, and `hera --resume <id>` still works for scripting. `/new` saves the current one and
+starts fresh; token totals are restored on resume.
 
 ## Extending Hera — MCP & custom tools
 
@@ -310,11 +311,11 @@ the live catalog the proxy is serving.
 
 ## Updating
 
-Current release: **0.8.5**. On launch Hera checks the published version (at most once a day,
+Current release: **0.8.6**. On launch Hera checks the published version (at most once a day,
 fail-silent) and prints a one-line notice when a newer one is out:
 
 ```
-↑ update available: Hera 0.8.5 (you have 0.6.1)
+↑ update available: Hera 0.8.6 (you have 0.6.1)
   re-run the installer, or:  curl -fsSL <download_url> -o "$(command -v hera || echo ~/.local/bin/hera)"
 ```
 
