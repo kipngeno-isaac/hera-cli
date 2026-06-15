@@ -136,8 +136,8 @@ Pick `[a]lways` at a `write_file` prompt and Hera creates files on its own for t
 | `/tools` | List the tools Hera can use (incl. MCP/custom) |
 | `/allow` | List `run_bash` allow patterns (or `/allow <pattern>` to add one) |
 | `/sandbox` | Show the `run_bash` sandbox status |
-| `/sessions` | List saved sessions |
-| `/resume` | Pick a past session from a list and resume it in place (`/resume <id>` to jump straight to one) |
+| `/sessions` | List saved conversations (by their first message) |
+| `/resume` | Pick a past conversation to resume — listed by its **first message**, choose by number |
 | `/reasoning` | Toggle streaming of the model's thinking |
 | `/cwd` | Show the working directory |
 | `/new` | Save the current session and start a fresh one |
@@ -162,17 +162,21 @@ yes/no. Press **`ESC`** while Hera is generating to **interrupt** the turn (hist
 
 ## Sessions & resume
 
-Conversations auto-save under `~/.config/hera/sessions/` after every turn:
+Conversations auto-save under `~/.config/hera/sessions/` after every turn. Inside a session,
+**`/resume`** (or `/sessions`) lists your recent conversations **by their first message** and the
+project folder — pick one **by number**, no ID to remember (just like Claude Code):
 
-```bash
-hera --continue        # resume the most recent session
-hera --resume <id>     # resume a specific session (id or prefix)
-hera --list-sessions   # list saved sessions
+```
+Resume a conversation (newest first)
+   1. How do I add OAuth login to my Flask app
+      2026-06-15 06:00 · 4 message(s) · webapp/
+   2. Write a bash script to rotate logs
+      2026-06-15 05:00 · 2 message(s) · scripts/
 ```
 
-`/sessions` lists them in-session and `/resume` lets you pick one to jump back into without
-leaving Hera; `/new` saves the current one and starts fresh. Token totals
-are restored on resume.
+From the shell: `hera --continue` reopens the latest, `hera --list-sessions` lists them, and
+`hera --resume <id>` still works for scripting. `/new` saves the current one and starts fresh;
+token totals are restored on resume.
 
 ## Extending Hera — MCP & custom tools
 
@@ -306,11 +310,11 @@ the live catalog the proxy is serving.
 
 ## Updating
 
-Current release: **0.8.4**. On launch Hera checks the published version (at most once a day,
+Current release: **0.8.5**. On launch Hera checks the published version (at most once a day,
 fail-silent) and prints a one-line notice when a newer one is out:
 
 ```
-↑ update available: Hera 0.8.4 (you have 0.6.1)
+↑ update available: Hera 0.8.5 (you have 0.6.1)
   re-run the installer, or:  curl -fsSL <download_url> -o "$(command -v hera || echo ~/.local/bin/hera)"
 ```
 

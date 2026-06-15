@@ -152,7 +152,7 @@ def save_config(updates):
         pass
 
 
-VERSION = "0.8.4"   # bump on every released change; mirrored in cli/VERSION
+VERSION = "0.8.5"   # bump on every released change; mirrored in cli/VERSION
 NAME    = _env("HERA_NAME", default="Hera")
 # No server host is baked into the source (so this repo can be public, revealing
 # neither key nor host). Each user supplies the endpoint + key once — via env
@@ -2319,7 +2319,7 @@ def resolve_identity():
     except (requests.exceptions.RequestException, ValueError):
         pass
     return ""
-CURRENT_SESSION = {"id": None, "created": None}
+CURRENT_SESSION = {"id": None, "created": None, "title": None}
 
 
 def _now():
@@ -2334,6 +2334,12 @@ def save_session(messages):
     """Persist the conversation (skips trivial sessions). Best-effort."""
     if not CURRENT_SESSION["id"] or len(messages) <= 1:
         return
+    # Capture the first real user question once, as a human title (survives
+    # compaction, which would later replace the messages with a summary).
+    if not CURRENT_SESSION.get("title"):
+        t = _first_user(messages)
+        if t and t != "(empty)":
+            CURRENT_SESSION["title"] = t
     try:
         os.makedirs(SESSIONS_DIR, exist_ok=True)
         state = {
@@ -2342,6 +2348,7 @@ def save_session(messages):
             "updated": _now(),
             "cwd": os.getcwd(),
             "model": MODEL,
+            "title": CURRENT_SESSION.get("title"),
             "tokens": dict(SESSION),
             "messages": messages,
         }
@@ -2395,23 +2402,35 @@ def load_session(sid):
 
 def _first_user(messages):
     for m in messages:
-        if m.get("role") == "user":
-            return " ".join(_text_of(m.get("content")).split())[:56]
+        if m.get("role") != "user":
+            continue
+        text = " ".join(_text_of(m.get("content")).split())
+        if text.startswith("[Summary of earlier conversation]"):
+            continue  # a compacted session — keep looking for the real question
+        if text:
+            return text[:64]
     return "(empty)"
+
+
+def _session_label(s):
+    """Human title for a saved session: its stored first question (preferred), or
+    the first user message in its history."""
+    return s.get("title") or _first_user(s.get("messages") or [])
 
 
 def print_sessions():
     sessions = list_sessions()
     if not sessions:
-        print(f"\n{DIM}no saved sessions in {SESSIONS_DIR}{R}\n")
+        print(f"\n{DIM}no saved conversations yet.{R}\n")
         return
-    print(f"\n{DIM}saved sessions (newest first) — resume with: hera --resume <id>{R}")
-    for s in sessions[:20]:
+    print(f"\n{BOLD}Saved conversations{R} {DIM}(newest first) — `/resume` to pick one, "
+          f"or `hera --continue` for the latest{R}")
+    for i, s in enumerate(sessions[:20], 1):
         msgs = s.get("messages", [])
         nturns = sum(1 for m in msgs if m.get("role") == "user")
-        print(f"  {BOLD}{s.get('id','?')}{R}  {DIM}{s.get('updated','?')}  "
-              f"{nturns} turn(s)  {s.get('tokens',{}).get('total',0)} tok  "
-              f"· {_first_user(msgs)}{R}")
+        proj = os.path.basename((s.get("cwd") or "").rstrip("/")) or "~"
+        print(f"  {ACCENT}{i:>2}.{R} {_session_label(s)}")
+        print(f"      {DIM}{(s.get('updated','') or '')[:16]} · {nturns} message(s) · {proj}/{R}")
     print()
 
 
@@ -2421,11 +2440,12 @@ def _switch_to(messages, s):
     messages[:] = s["messages"]
     CURRENT_SESSION["id"] = s["id"]
     CURRENT_SESSION["created"] = s.get("created")
+    CURRENT_SESSION["title"] = s.get("title") or _first_user(s.get("messages") or [])
     SESSION.update(s.get("tokens", {}))
     _always_ok.clear()
     nturns = sum(1 for m in messages if m.get("role") == "user")
     where = s.get("cwd", "")
-    print(f"\n{GREEN}resumed {s['id']}{R} {DIM}({nturns} turn(s), "
+    print(f"\n{GREEN}resumed:{R} {_session_label(s)} {DIM}({nturns} message(s), "
           f"{SESSION.get('total', 0)} tok){R}")
     if where and where != os.getcwd():
         print(f"{DIM}note: this session was started in {_short(where)} — "
@@ -2440,13 +2460,13 @@ def resume_picker(messages):
         print(f"\n{DIM}no saved sessions yet.{R}\n")
         return
     shown = sessions[:20]
-    print(f"\n{BOLD}Resume a session{R} {DIM}(newest first){R}")
+    print(f"\n{BOLD}Resume a conversation{R} {DIM}(newest first){R}")
     for i, s in enumerate(shown, 1):
         msgs = s.get("messages", [])
         nturns = sum(1 for m in msgs if m.get("role") == "user")
-        print(f"  {ACCENT}{i:>2}{R}  {DIM}{s.get('updated','?')}{R}  "
-              f"{nturns} turn(s)  {DIM}{s.get('tokens',{}).get('total',0)} tok{R}\n"
-              f"      {_first_user(msgs)}")
+        proj = os.path.basename((s.get("cwd") or "").rstrip("/")) or "~"
+        print(f"  {ACCENT}{i:>2}.{R} {_session_label(s)}")
+        print(f"      {DIM}{(s.get('updated','') or '')[:16]} · {nturns} message(s) · {proj}/{R}")
     try:
         ans = input(f"\n{BOLD}  number to resume (Enter to cancel):{R} ").strip()
     except (EOFError, KeyboardInterrupt):
@@ -3022,8 +3042,8 @@ SLASH_COMMANDS = [
     ("/tools",     "",          "list the tools I can use"),
     ("/allow",     "[pattern]", "list run_bash allow patterns, or add one"),
     ("/sandbox",   "",          "show the run_bash sandbox status"),
-    ("/sessions",  "",          "list saved sessions"),
-    ("/resume",    "[id]",      "pick a past session to resume in place"),
+    ("/sessions",  "",          "list saved conversations (by their first message)"),
+    ("/resume",    "",          "pick a past conversation to resume (by its first message)"),
     ("/reasoning", "",          "toggle streaming of my thinking"),
     ("/cwd",       "",          "show the working directory"),
     ("/new",       "",          "save current and start a fresh session"),
@@ -3998,9 +4018,10 @@ def main():
             messages = s["messages"]
             CURRENT_SESSION["id"] = s["id"]
             CURRENT_SESSION["created"] = s.get("created")
+            CURRENT_SESSION["title"] = s.get("title") or _first_user(s.get("messages") or [])
             SESSION.update(s.get("tokens", {}))
-            print(f"{DIM}resumed session {s['id']} "
-                  f"({sum(1 for m in messages if m.get('role') == 'user')} turns, "
+            print(f"{DIM}resumed: {_session_label(s)} "
+                  f"({sum(1 for m in messages if m.get('role') == 'user')} messages, "
                   f"{SESSION.get('total', 0)} tokens){R}")
         else:
             print(f"{YELL}no matching session — starting fresh{R}")
