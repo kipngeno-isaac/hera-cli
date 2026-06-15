@@ -150,8 +150,9 @@ Panel**).
 - **Model wiring:** Open WebUI talks to the inference server via `OPENAI_API_BASE_URL` /
   `OPENAI_API_KEY` (set in `docker-compose.yml`); users never see that shared key.
 - **Web search:** enabled stack-wide so users can browse from chat (the 🌐 toggle), and the custom
-  OWUI image seeds a global **Auto Web Search** filter into the DB on startup so current/factual
-  prompts can browse without the user toggling it manually. Core search is configured in
+  OWUI image repairs the required PersistentConfig keys in `webui.db` on startup, then seeds a
+  global **Auto Web Search** filter so current/factual prompts can browse without the user toggling
+  it manually. Core search is configured in
   `docker-compose.yml`: `ENABLE_WEB_SEARCH=true`, `WEB_SEARCH_ENGINE=duckduckgo` (needs no API
   key), `WEB_SEARCH_RESULT_COUNT=5`, and `BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL=true` (the
   fetched pages are injected straight into the model's 32k context — no embedding model to host,
@@ -170,9 +171,11 @@ Panel**).
 > **⚠ PersistentConfig gotcha (important).** Open WebUI persists most of these settings
 > (`ENABLE_SIGNUP`, `DEFAULT_USER_ROLE`, the API-key permission, model access, etc.) into its
 > **database** on first boot. After that, **changing the env var in `docker-compose.yml` has no
-> effect** — the DB value wins. To change a setting on a running instance, change it in the
-> **Admin Panel UI** (or wipe the `open-webui-data` volume to re-seed from env, which also deletes
-> all users/chats). So: set env vars *before* the first boot; tweak everything afterwards in the UI.
+> effect** — the DB value wins. This stack's custom image now repairs the critical internet-access
+> settings (API keys + web search) on startup, but other PersistentConfig settings still follow the
+> normal rule. To change a setting on a running instance, change it in the **Admin Panel UI** (or
+> wipe the `open-webui-data` volume to re-seed from env, which also deletes all users/chats). So:
+> set env vars *before* the first boot; tweak everything afterwards in the UI.
 
 ---
 
@@ -205,5 +208,6 @@ After that, hand each approved user [`ACCESS_WEB.md`](ACCESS_WEB.md) (mint a key
 | "Account is not approved" from the CLI | Your role is `pending`; ask the admin to set it to `user`. |
 | API Keys section missing in Settings | The per-role API-key **permission** is off — admin enables it under *Settings → Users → Permissions → Features → API Keys*. |
 | Lost your API key | Create a new one in Settings → Account → API keys (the old one keeps working until you delete/regenerate it). |
+| A previous reply errored and the chat seems stuck | Refresh once if needed, then send the next message normally. This stack patches Open WebUI so failed assistant turns are marked complete instead of leaving the chat in a permanent "in progress" state. |
 | Changed an env var but nothing changed | PersistentConfig — change it in the **Admin Panel UI** instead (see the gotcha in [§4](#4-for-the-admin)). |
 | Can't reach `http://<HOST>:3000` at all | Wrong `<HOST>`, the stack is down, or a firewall blocks `:3000`. Ask the admin. |

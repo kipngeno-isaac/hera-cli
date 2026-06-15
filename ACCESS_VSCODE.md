@@ -95,6 +95,9 @@ Open **Settings → Extensions → Hera** (or edit `settings.json`):
   shell's `HERA_API_KEY`).
 - Your key is your identity — sessions are labelled by the account it resolves to, so there's no
   `HERA_USER` to set. Use `hera.extraEnv` only for extras like `HERA_YOLO` or `HERA_EMBED_URL`.
+- The extension inherits Hera's current sandbox defaults, including **network-enabled `run_bash`**
+  for internet access from the chat panel. Set `hera.extraEnv.HERA_SANDBOX_NET` to `"0"` only if
+  you want to force shell networking off.
 - After changing any `hera.*` setting, **reopen the chat panel** (or run *Developer: Reload
   Window*) so the freshly spawned `hera --serve` picks up the new value.
 

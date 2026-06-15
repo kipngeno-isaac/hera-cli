@@ -89,7 +89,7 @@ if [ -f "$CONFIG_FILE" ] && grep -q '"api_key"' "$CONFIG_FILE" 2>/dev/null; then
     echo "✓ existing config kept: $CONFIG_FILE"
 else
     # Point update checks + the "how to update" hint back at this server.
-    printf '{\n  "api_url": "%s",\n  "update_url": "%s/VERSION",\n  "download_url": "%s/hera.py"\n}\n' \
+    printf '{\n  "api_url": "%s",\n  "sandbox_net": true,\n  "update_url": "%s/VERSION",\n  "download_url": "%s/hera.py"\n}\n' \
         "$API_URL" "$SERVER" "$SERVER" > "$CONFIG_FILE"
     chmod 600 "$CONFIG_FILE"
     echo "✓ endpoint saved: $API_URL  ($CONFIG_FILE)"

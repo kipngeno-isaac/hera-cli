@@ -111,6 +111,20 @@ def _cfg(*env_names, key=None, default=""):
     return default
 
 
+def _cfg_truthy(*env_names, key=None, default=False):
+    """Env var → config file value → boolean default."""
+    v = _env(*env_names)
+    if v != "":
+        return _truthy(v)
+    if key:
+        cfg_v = _FILE_CFG.get(key)
+        if cfg_v not in (None, ""):
+            if isinstance(cfg_v, bool):
+                return cfg_v
+            return _truthy(str(cfg_v))
+    return default
+
+
 def save_config(updates):
     """Merge `updates` into the on-disk config (0600). Best-effort."""
     _FILE_CFG.update({k: v for k, v in updates.items() if v})
@@ -158,7 +172,9 @@ _PKG_MAP = {"rg": "ripgrep", "fd": "fd-find", "http": "httpie", "pip": "python3-
 
 # Sandboxing for run_bash. Modes: auto | bwrap | unshare | none
 SANDBOX_MODE = _env("HERA_SANDBOX", default="auto").lower()
-SANDBOX_NET  = _truthy(_env("HERA_SANDBOX_NET"))  # allow network inside the sandbox
+# Keep shell networking available by default; users can still disable it with
+# HERA_SANDBOX_NET=0 or "sandbox_net": false in config.json.
+SANDBOX_NET  = _cfg_truthy("HERA_SANDBOX_NET", key="sandbox_net", default=True)
 
 # Running token usage for the whole session.
 SESSION = {"prompt": 0, "completion": 0, "total": 0, "requests": 0}
@@ -3203,7 +3219,7 @@ def _repl(messages, spinner):
         if cmd == "/sandbox":
             print(f"\n{DIM}sandbox: {sandbox_label()}\n"
                   f"  mode={SANDBOX_MODE} kind={SANDBOX_KIND} network={'on' if SANDBOX_NET else 'off'}\n"
-                  f"  change with HERA_SANDBOX=bwrap|unshare|none and HERA_SANDBOX_NET=1{R}\n")
+                  f"  change with HERA_SANDBOX=bwrap|unshare|none and HERA_SANDBOX_NET=0|1{R}\n")
             continue
         if cmd == "/allow" or cmd.startswith("/allow "):
             arg = user_input[6:].strip()

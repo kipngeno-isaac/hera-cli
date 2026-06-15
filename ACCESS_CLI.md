@@ -261,8 +261,8 @@ email is known), so users never share context on one machine.
 ### Sandboxing & permissions
 
 `run_bash` runs sandboxed by default: **bubblewrap** (filesystem confined to the working dir,
-network off) if installed, else `unshare` (PID/network isolation), else none. `HERA_SANDBOX_NET=1`
-allows network (for `pip install`, `git pull`); `/sandbox` shows the active level. Pre-approve
+network on) if installed, else `unshare` (PID isolation, network on), else none. `HERA_SANDBOX_NET=0`
+turns network back off if you want a stricter shell sandbox; `/sandbox` shows the active level. Pre-approve
 safe commands with `HERA_ALLOW`, a `.heraallow` file, `/allow`, or `[a]`/`[p]` at a prompt; a
 built-in denylist always forces a prompt for dangerous commands.
 
@@ -297,7 +297,7 @@ chat is using.
 | `HERA_VISION_MODEL` | = `HERA_MODEL` | Model name at `HERA_VISION_URL`. |
 | `HERA_NO_COLOR` / `HERA_FORCE_COLOR` | `0` | Disable / force colour. |
 | `HERA_SANDBOX` | `auto` | `auto` / `bwrap` / `unshare` / `none`. |
-| `HERA_SANDBOX_NET` | `0` | `1` = allow network in the sandbox. |
+| `HERA_SANDBOX_NET` | `1` | `0` = block network in the sandbox. |
 | `HERA_ALLOW` / `HERA_DENY` | _(empty)_ | `run_bash` allow / extra-deny patterns. |
 | `HERA_MCP_CONFIG` | `~/.config/hera/mcp.json` | MCP servers (Claude-Desktop shape). |
 | `HERA_MCP_SANDBOX` | `0` | `1` = run MCP servers under the sandbox. |

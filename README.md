@@ -201,9 +201,9 @@ checkpoints, and returns a concise result.
 ## Sandboxing & permissions
 
 `run_bash` runs in a sandbox by default (`HERA_SANDBOX=auto`): **bubblewrap** if installed
-(filesystem confined to the working dir, network off — best), else **`unshare`** on Linux
-(PID-isolated, network off), else **none**. Set `HERA_SANDBOX_NET=1` to allow network (for
-`pip install`, `git pull`, …), or `HERA_SANDBOX=none` to disable. Check with `/sandbox`.
+(filesystem confined to the working dir, network on by default — best), else **`unshare`** on Linux
+(PID-isolated, network on), else **none**. Set `HERA_SANDBOX_NET=0` to block network again, or
+`HERA_SANDBOX=none` to disable sandboxing entirely. Check with `/sandbox`.
 
 Pre-approve safe commands so they don't prompt: `HERA_ALLOW="git status,git diff*,pytest*"`,
 a `.heraallow` file (one pattern per line), `/allow <pattern>`, or **[a]/[p]** at a prompt. A
@@ -238,7 +238,7 @@ the live catalog the proxy is serving.
 | `HERA_NO_COLOR` | `0` | `1` = disable colour/styling (also honours `NO_COLOR`) |
 | `HERA_FORCE_COLOR` | `0` | `1` = force colour even when output isn't a TTY |
 | `HERA_SANDBOX` | `auto` | `run_bash` sandbox: `auto` / `bwrap` / `unshare` / `none` |
-| `HERA_SANDBOX_NET` | `0` | `1` = allow network inside the sandbox |
+| `HERA_SANDBOX_NET` | `1` | `0` = block network inside the sandbox |
 | `HERA_ALLOW` | _(empty)_ | Comma-separated `run_bash` allow patterns (also reads `.heraallow`) |
 | `HERA_DENY` | _(empty)_ | Extra deny patterns (added to the built-in list) |
 | `HERA_SESSIONS_DIR` | `~/.config/hera/sessions` | Where session transcripts are saved |
