@@ -52,7 +52,7 @@ from everyone else's.
 > **Sanity-check the server is reachable** before installing (optional):
 > ```bash
 > curl http://<HOST>:8090/health           # → {"status": "ok"}
-> curl -H "Authorization: Bearer sk-…" http://<HOST>:8090/whoami   # → {"email": "...", "role": "user"}
+> curl -H "Authorization: Bearer sk-…" http://<HOST>:8090/whoami   # → {"email": "...", "role": "user", "name": "Your Name"}
 > ```
 > A `200` from `/health` means the proxy is up; a good `/whoami` means your key is valid **and**
 > approved. A `403` there means your account is still `pending` (ask the admin); `401` means a bad key.
@@ -148,15 +148,20 @@ On first launch Hera asks you to **paste your API key** once, saves it to
   Paste your API key: sk-…………………
 
 ✓ saved to ~/.config/hera/config.json — you're set; this won't ask again.
-✓ signed in as you@example.com — sessions are labelled by your account.
+✓ signed in as Your Name (you@example.com) — sessions are labelled by your account.
 ```
 
 …then the banner appears and you're at the prompt.
 
 **Your key is your identity.** Right after you paste it, Hera asks the proxy's `/whoami` which
-account the key belongs to and labels your sessions by that email automatically (`"user"` is
-written into your config) — there's nothing else to set. The same config also powers the VS Code
-extension.
+account the key belongs to and shows your **name + email** in the banner, labelling your sessions by
+that account automatically — there's nothing else to set. The same config also powers the VS Code
+extension. (Check anytime with `hera whoami`.)
+
+**Switching users.** On a shared machine, sign out and hand over with **`hera logout`** (or
+**`/logout`** inside a session). It clears the saved key and identity — keeping the endpoint — so
+the next person just pastes *their* key and gets their own name, sessions, and history. In VS Code,
+clear (or change) the `hera.apiKey` setting and reload the panel.
 
 > **Installed manually (raw GitHub), so no endpoint is saved yet?** Hera will ask for the
 > endpoint too on first run (it's the identity proxy, `http://<HOST>:8090/v1`). Or set it once:
@@ -254,6 +259,7 @@ routed there automatically.
 | `/reasoning` | Toggle streaming the model's thinking |
 | `/cwd` | Show the working directory |
 | `/new`, `/clear` | Start a fresh session |
+| `/logout` | Sign out and switch to a different API key (a different user) |
 | `/help`, `/exit` | Help / quit |
 
 ### Sessions & resume
@@ -350,12 +356,12 @@ chat is using.
 
 ## 6. Keeping Hera up to date
 
-The current release is **0.8.3**. On launch Hera checks the published version (at most once a
+The current release is **0.8.4**. On launch Hera checks the published version (at most once a
 day, fail-silent — it never blocks or errors startup). If a newer one is out, you'll see a
 one-line notice like:
 
 ```
-↑ update available: Hera 0.8.3 (you have 0.6.1)
+↑ update available: Hera 0.8.4 (you have 0.6.1)
   re-run the installer, or:  curl -fsSL <download_url> -o "$(command -v hera || echo ~/.local/bin/hera)"
 ```
 
@@ -367,17 +373,19 @@ $ hera doctor
 
 ▌ Hera doctor  · update + health check
 
-  ✓ update       updated v0.6.1 → v0.8.3  ·  ~/.local/bin/hera
+  ✓ update       updated v0.6.1 → v0.8.4  ·  ~/.local/bin/hera
   ✓ endpoint     http://<HOST>:8090/v1
   ✓ api key      set
   ✓ model        qwen3.6-35b-a3b — HTTP 200
-  ✓ identity     you@example.com
+  ✓ identity     Your Name (you@example.com)
   ✓ sandbox      bwrap — fs confined to cwd, network on
   ✓ context      auto-compacts near 32000 tok, and self-recovers on overflow
 ```
 
-`hera doctor --force` re-downloads even if you're already current. Or update manually — re-run the
-one-line installer from step 2, or pull the latest single file:
+The **identity** line shows the real account the key belongs to (your name + email, fetched live
+from `/whoami`) — so every surface greets *you*. `hera doctor --force` re-downloads even if you're
+already current. Or update manually — re-run the one-line installer from step 2, or pull the latest
+single file:
 
 ```bash
 curl -fsSL http://<HOST>:8081/hera.py -o "$(command -v hera || echo ~/.local/bin/hera)"

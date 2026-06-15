@@ -152,7 +152,7 @@ def save_config(updates):
         pass
 
 
-VERSION = "0.8.3"   # bump on every released change; mirrored in cli/VERSION
+VERSION = "0.8.4"   # bump on every released change; mirrored in cli/VERSION
 NAME    = _env("HERA_NAME", default="Hera")
 # No server host is baked into the source (so this repo can be public, revealing
 # neither key nor host). Each user supplies the endpoint + key once — via env
@@ -2206,6 +2206,17 @@ def _sessions_dir_for(uid):
 
 USER_ID = _compute_user_id()
 SESSIONS_DIR = _sessions_dir_for(USER_ID)
+# Friendly identity (resolved from the key via the proxy's /whoami): the account
+# email and display name, so every surface can greet the real user.
+USER_EMAIL = _cfg("HERA_USER", key="user")
+USER_NAME = _FILE_CFG.get("user_name", "")
+
+
+def whoami_label():
+    """A human label for the signed-in user: 'Name (email)' / email / (not set)."""
+    if USER_NAME and USER_EMAIL:
+        return f"{USER_NAME} ({USER_EMAIL})"
+    return USER_EMAIL or USER_NAME or "(not signed in)"
 
 
 def _whoami_url():
@@ -2278,9 +2289,11 @@ def resolve_identity():
     and cache the account email, so sessions are labelled by the real user with
     no HERA_USER to set. Idempotent and fail-silent — falls back to the key hash
     if the proxy is old or unreachable. Returns the known/resolved email."""
-    global USER_ID, SESSIONS_DIR
+    global USER_ID, SESSIONS_DIR, USER_EMAIL, USER_NAME
     known = _env("HERA_USER") or _FILE_CFG.get("user")
     if known:
+        USER_EMAIL = known
+        USER_NAME = USER_NAME or _FILE_CFG.get("user_name", "")
         return known
     if not (API_URL and API_KEY):
         return ""
@@ -2289,13 +2302,18 @@ def resolve_identity():
                          headers={"Authorization": f"Bearer {API_KEY}",
                                   "User-Agent": _WEB_UA})
         if r.ok:
-            email = ((r.json() or {}).get("email") or "").strip()
+            data = r.json() or {}
+            email = (data.get("email") or "").strip()
+            name = (data.get("name") or "").strip()
             if email:
-                save_config({"user": email})
+                USER_EMAIL = email
+                USER_NAME = name
+                save_config({"user": email, "user_name": name})
                 USER_ID = _compute_user_id()
                 SESSIONS_DIR = _sessions_dir_for(USER_ID)
                 if sys.stdin.isatty():
-                    print(f"{GREEN}✓ signed in as {email}{R} "
+                    greet = f"{name} ({email})" if name else email
+                    print(f"{GREEN}✓ signed in as {greet}{R} "
                           f"{DIM}— sessions are labelled by your account.{R}")
                 return email
     except (requests.exceptions.RequestException, ValueError):
@@ -2964,6 +2982,8 @@ def print_banner():
 
     print(rule)
     row("server", host)
+    if USER_EMAIL or USER_NAME:
+        row("account", whoami_label(), GREEN)
     row("cwd", _short(os.getcwd()))
     if YOLO:
         row("safety", "auto-approve (YOLO)", RED)
@@ -3008,6 +3028,7 @@ SLASH_COMMANDS = [
     ("/cwd",       "",          "show the working directory"),
     ("/new",       "",          "save current and start a fresh session"),
     ("/clear",     "",          "same as /new (fresh conversation)"),
+    ("/logout",    "",          "sign out and switch to a different API key"),
     ("/exit",      "",          "quit  (Ctrl-C or Ctrl-D also work)"),
 ]
 _SLASH_HELP = {name: (args, desc) for name, args, desc in SLASH_COMMANDS}
@@ -3407,6 +3428,10 @@ def _serve_input_thread():
                 _save_auto_mode(want)
                 _emit({"type": "info", "text": f"auto mode → {want}"})
                 _emit({"type": "auto_mode", "mode": want})
+        elif t == "logout":
+            logout()
+            _emit({"type": "info", "text": "logged out — set hera.apiKey to a new key and reload."})
+            _emit({"type": "logged_out"})
         else:
             _MAIN_Q.put(msg)
 
@@ -3673,6 +3698,7 @@ def serve_main():
     threading.Thread(target=_serve_input_thread, daemon=True).start()
     _emit({"type": "ready", "name": NAME, "model": MODEL, "cwd": os.getcwd(),
            "sandbox": sandbox_label(), "tools": list(TOOLS), "auto_mode": AUTO_MODE,
+           "user": whoami_label() if (USER_EMAIL or USER_NAME) else "",
            "vision": bool(VISION_URL), "needs_key": not bool(API_KEY)})
     while True:
         msg = _MAIN_Q.get()
@@ -3803,6 +3829,28 @@ def onboard():
     return True
 
 
+def logout():
+    """Forget the saved API key + identity so a different user can sign in.
+
+    Keeps the endpoint (so the next user only pastes their key). Removes the key,
+    resolved email and name from the config file and from this process.
+    """
+    global API_KEY, USER_EMAIL, USER_NAME, USER_ID, SESSIONS_DIR
+    for k in ("api_key", "user", "user_name"):
+        _FILE_CFG.pop(k, None)
+    try:
+        os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(_FILE_CFG, f, indent=2)
+        os.chmod(CONFIG_PATH, 0o600)
+    except OSError:
+        pass
+    API_KEY = ""
+    USER_EMAIL = USER_NAME = ""
+    USER_ID = _compute_user_id()
+    SESSIONS_DIR = _sessions_dir_for(USER_ID)
+
+
 def _self_update(force=False):
     """Download the latest hera.py over the currently-running file.
 
@@ -3867,7 +3915,7 @@ def doctor():
             line(False, "model", f"unreachable: {exc}")
         try:
             resolve_identity()
-            line(True, "identity", _cfg("HERA_USER", key="user") or USER_ID)
+            line(bool(USER_EMAIL or USER_NAME), "identity", whoami_label())
         except Exception:  # noqa: BLE001
             line(True, "identity", USER_ID)
 
@@ -3885,7 +3933,7 @@ def main():
     ap = argparse.ArgumentParser(prog="hera", add_help=True,
                                  description="Hera — agentic coding CLI")
     ap.add_argument("command", nargs="?", default=None,
-                    help="doctor — update Hera to the latest version and run a health check")
+                    help="doctor (update + health check) · logout (switch user) · whoami")
     ap.add_argument("--resume", "-r", nargs="?", const="__latest__", default=None,
                     metavar="ID", help="resume a saved session (latest if no ID)")
     ap.add_argument("--continue", "-c", dest="cont", action="store_true",
@@ -3902,9 +3950,18 @@ def main():
     if args.command == "doctor":
         doctor()
         return
+    if args.command == "logout":
+        logout()
+        print(f"{GREEN}✓ logged out{R} {DIM}— key and identity cleared from {CONFIG_PATH}. "
+              f"Run `hera` to sign in with a different key.{R}")
+        return
+    if args.command == "whoami":
+        resolve_identity()
+        print(whoami_label())
+        return
     if args.command:
-        print(f"{RED}[error] unknown command {args.command!r}. Did you mean `hera doctor`?{R}",
-              file=sys.stderr)
+        print(f"{RED}[error] unknown command {args.command!r}. "
+              f"Try: hera doctor · hera logout · hera whoami{R}", file=sys.stderr)
         return
 
     if args.serve:
@@ -3981,6 +4038,18 @@ def _repl(messages, spinner):
             messages[:] = _start_new_session()
             _always_ok.clear()
             print(f"\n{DIM}Started a fresh session ({CURRENT_SESSION['id']}).{R}\n")
+            continue
+        if cmd == "/logout":
+            save_session(messages)                 # keep the current user's history
+            logout()
+            print(f"\n{GREEN}✓ logged out{R} {DIM}— key cleared. Sign in with a different key.{R}")
+            if not onboard():                      # prompts for the new key (endpoint kept)
+                print(f"{DIM}No key entered — exiting.{R}")
+                break
+            resolve_identity()
+            messages[:] = _start_new_session()     # don't show the previous user's context
+            _always_ok.clear()
+            print(f"{DIM}Fresh session started for the new account.{R}\n")
             continue
         if cmd == "/sessions":
             print_sessions()

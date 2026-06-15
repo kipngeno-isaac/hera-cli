@@ -73,9 +73,11 @@ export HERA_API_KEY=sk-...                  # your Open WebUI API key
 ```
 </details>
 
-**Your key is your identity:** on first run Hera asks the proxy which account the key belongs to
-and labels your sessions by that email — nothing else to set. This repo ships **no key and no
-host** (that's why it can be public) — you supply both, once. See
+**Your key is your identity:** on first run Hera asks the proxy which account the key belongs to,
+greets you by **name + email** in the banner, and labels your sessions by that account — nothing
+else to set (check with `hera whoami`). On a shared machine, **`hera logout`** (or `/logout`
+in-session) clears the key + identity so a different user can paste their own key. This repo ships
+**no key and no host** (that's why it can be public) — you supply both, once. See
 [`ACCESS_CLI.md`](ACCESS_CLI.md) for the full walkthrough.
 
 ---
@@ -140,6 +142,7 @@ Pick `[a]lways` at a `write_file` prompt and Hera creates files on its own for t
 | `/cwd` | Show the working directory |
 | `/new` | Save the current session and start a fresh one |
 | `/clear` | Same as `/new` |
+| `/logout` | Sign out and switch to a different API key (different user) |
 | `/help` | Show command list |
 | `/exit` | Quit (Ctrl-C / Ctrl-D also work) |
 
@@ -303,11 +306,11 @@ the live catalog the proxy is serving.
 
 ## Updating
 
-Current release: **0.8.3**. On launch Hera checks the published version (at most once a day,
+Current release: **0.8.4**. On launch Hera checks the published version (at most once a day,
 fail-silent) and prints a one-line notice when a newer one is out:
 
 ```
-↑ update available: Hera 0.8.3 (you have 0.6.1)
+↑ update available: Hera 0.8.4 (you have 0.6.1)
   re-run the installer, or:  curl -fsSL <download_url> -o "$(command -v hera || echo ~/.local/bin/hera)"
 ```
 

@@ -14,7 +14,11 @@ endpoint. It runs the model in a reason→act loop with real tools and a permiss
 aiming for Claude-Code-class behavior.
 
 ## Latest changes
-- **Version:** `0.8.3`.
+- **Version:** `0.8.4`.
+- **Personal identity + logout** — proxy `/whoami` now also returns `name`; the CLI resolves and
+  shows **name + email** (banner `account` row, `hera doctor`, new `hera whoami`, serve `ready.user`
+  → VS Code 👤 meta). `logout()` clears key + identity (keeps endpoint): `hera logout`, `/logout`
+  (re-onboards inline), serve `{"type":"logout"}`. Globals `USER_EMAIL`/`USER_NAME`/`whoami_label()`.
 - **Per-project auto-approve modes** — `AUTO_MODE` ∈ {`read`,`edit`,`all`} (Claude-Code-style),
   saved under `config["auto_modes"][<project path>]`. `/auto read|edit|all|off`, `HERA_AUTO_MODE`,
   serve `{"type":"auto"}`, and a VS Code **Auto** dropdown. Wired into `approve()` **and**
@@ -27,7 +31,7 @@ aiming for Claude-Code-class behavior.
   (`_is_context_overflow`), `compact_history()`, and retry once; `_maybe_auto_compact` also fires on
   the server's real last prompt-token count (`_LAST_PROMPT_TOKENS`). No more raw
   `400 … exceeds the available context size`.
-- **Claude-Code parity pass (0.7.0 → 0.8.3):**
+- **Claude-Code parity pass (0.7.0 → 0.8.4):**
   - **To-do tracking** — `todo_write` tool maintains a live checklist (CLI render + `todos`
     serve event → "Plan" block in VS Code). The system prompt nudges it for multi-step tasks.
   - **End-of-task next-step tips** — `_generate_suggestions` (called with `enable_thinking:false`)
