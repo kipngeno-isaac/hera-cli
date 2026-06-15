@@ -152,7 +152,7 @@ def save_config(updates):
         pass
 
 
-VERSION = "0.8.1"   # bump on every released change; mirrored in cli/VERSION
+VERSION = "0.8.2"   # bump on every released change; mirrored in cli/VERSION
 NAME    = _env("HERA_NAME", default="Hera")
 # No server host is baked into the source (so this repo can be public, revealing
 # neither key nor host). Each user supplies the endpoint + key once — via env
@@ -193,6 +193,9 @@ SANDBOX_NET  = _cfg_truthy("HERA_SANDBOX_NET", key="sandbox_net", default=True)
 
 # Running token usage for the whole session.
 SESSION = {"prompt": 0, "completion": 0, "total": 0, "requests": 0}
+# The server-reported total tokens of the last request — used as ground truth for
+# auto-compaction (more accurate than estimating from characters).
+_LAST_PROMPT_TOKENS = 0
 
 # ── Claude-parity feature config ──────────────────────────────────────────────
 # Cost estimate: USD price per 1M tokens. 0 (the default) hides the $ display.
@@ -1330,6 +1333,17 @@ def interruptible():
 
 
 # ── Streaming chat call ───────────────────────────────────────────────────────
+def _is_context_overflow(exc):
+    """True if an HTTP 400 is the server rejecting an over-long prompt."""
+    try:
+        body = (exc.response.text if exc.response is not None else "") or ""
+    except Exception:  # noqa: BLE001
+        body = ""
+    body = body.lower()
+    return ("context" in body and ("exceed" in body or "larger than" in body
+                                   or "too long" in body or "available context" in body))
+
+
 def stream_turn(messages, spinner, tools=None):
     """One model turn. Streams reasoning + content live; assembles tool calls.
 
@@ -1348,7 +1362,9 @@ def stream_turn(messages, spinner, tools=None):
 
     resp = None
     last_err = None
-    for attempt in range(3):
+    compacted = False
+    attempt = 0
+    while attempt < 3:
         try:
             resp = requests.post(
                 f"{url}/chat/completions",
@@ -1372,16 +1388,29 @@ def stream_turn(messages, spinner, tools=None):
         except requests.exceptions.HTTPError as exc:
             last_err = exc
             code = exc.response.status_code if exc.response is not None else 0
+            # Self-heal a context-overflow 400: summarize the history and retry
+            # once, so a big file read mid-task can't dead-end the turn.
+            if (code == 400 and _is_context_overflow(exc)
+                    and not compacted and len(messages) > 2):
+                spinner.stop()
+                print(f"{DIM}  context window full — compacting history and retrying…{R}",
+                      file=sys.stderr)
+                compact_history(messages)
+                url, model, send_messages, downgraded = _select_endpoint(messages)
+                compacted = True
+                spinner.start()
+                continue  # doesn't count as a failed attempt
             if code and code < 500:
-                spinner.stop()  # 4xx (401/403/400) won't fix itself — don't retry
+                spinner.stop()  # other 4xx (401/403) won't fix itself — don't retry
                 print(f"{RED}[error] {exc}{R}\n", file=sys.stderr)
                 return None
         except requests.exceptions.ConnectionError as exc:
             last_err = exc
         except requests.exceptions.Timeout as exc:
             last_err = exc
-        if attempt < 2:
-            time.sleep(1.5 * (attempt + 1))  # 1.5s, 3s
+        attempt += 1
+        if attempt < 3:
+            time.sleep(1.5 * attempt)  # 1.5s, 3s
 
     if resp is None:
         spinner.stop()
@@ -1490,9 +1519,13 @@ def _account(usage):
     """Fold a request's usage into the session totals; return per-request total."""
     if not usage:
         return 0
+    global _LAST_PROMPT_TOKENS
     p = usage.get("prompt_tokens", 0)
     c = usage.get("completion_tokens", 0)
     t = usage.get("total_tokens", p + c)
+    # Remember the server's real prompt size so auto-compaction triggers on
+    # ground truth rather than a rough char estimate.
+    _LAST_PROMPT_TOKENS = p + c
     SESSION["prompt"]     += p
     SESSION["completion"] += c
     SESSION["total"]      += t
@@ -2839,7 +2872,8 @@ def _maybe_auto_compact(messages, emit=None):
     --serve event sink; when None we print to the terminal."""
     if CONTEXT_TOKENS <= 0 or AUTO_COMPACT_AT <= 0 or len(messages) <= 4:
         return
-    est = _estimate_tokens(messages)
+    # Use whichever is larger: the server's real last prompt size or our estimate.
+    est = max(_estimate_tokens(messages), _LAST_PROMPT_TOKENS)
     if est < AUTO_COMPACT_AT * CONTEXT_TOKENS:
         return
     note = f"context ~{est} tok nearing the {CONTEXT_TOKENS} limit — auto-compacting…"
@@ -3330,18 +3364,34 @@ def _serve_stream(messages):
         _VISION_WARNED = True
         _emit({"type": "info", "text": "image attached, but the current model is "
                "text-only — set HERA_VISION_URL to enable vision."})
-    try:
-        resp = requests.post(
-            f"{url}/chat/completions",
-            json={"model": model, "messages": send_messages, "tools": TOOL_SCHEMAS,
-                  "tool_choice": "auto", "stream": True,
-                  "stream_options": {"include_usage": True}},
-            headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
-            stream=True, timeout=600,
-        )
-        resp.raise_for_status()
-    except requests.exceptions.RequestException as exc:
-        _emit({"type": "error", "message": str(exc)})
+    resp = None
+    for compacted in (False, True):
+        try:
+            resp = requests.post(
+                f"{url}/chat/completions",
+                json={"model": model, "messages": send_messages, "tools": TOOL_SCHEMAS,
+                      "tool_choice": "auto", "stream": True,
+                      "stream_options": {"include_usage": True}},
+                headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
+                stream=True, timeout=600,
+            )
+            resp.raise_for_status()
+            break
+        except requests.exceptions.HTTPError as exc:
+            code = exc.response.status_code if exc.response is not None else 0
+            # Self-heal a context-overflow 400: summarize and retry once.
+            if (code == 400 and _is_context_overflow(exc)
+                    and not compacted and len(messages) > 2):
+                _emit({"type": "info", "text": "context window full — compacting and retrying…"})
+                compact_history(messages)
+                url, model, send_messages, downgraded = _select_endpoint(messages)
+                continue
+            _emit({"type": "error", "message": str(exc)})
+            return None
+        except requests.exceptions.RequestException as exc:
+            _emit({"type": "error", "message": str(exc)})
+            return None
+    if resp is None:
         return None
 
     content, tool_calls, usage, finish = [], {}, None, None
@@ -3681,11 +3731,89 @@ def onboard():
     return True
 
 
+def _self_update(force=False):
+    """Download the latest hera.py over the currently-running file.
+
+    Returns (True, msg) if updated, (None, msg) if already current, (False, msg)
+    on error. Source is the install server's `download_url` (recorded by the
+    installer), falling back to the public GitHub copy.
+    """
+    download_url = _cfg("HERA_DOWNLOAD_URL", key="download_url",
+                        default="https://raw.githubusercontent.com/jones0011738/hera-cli/main/hera.py")
+    target = sys.argv[0] if (sys.argv and os.path.isfile(sys.argv[0])) else __file__
+    target = os.path.realpath(target)
+    try:
+        r = requests.get(download_url, timeout=20, headers={"User-Agent": _WEB_UA})
+        r.raise_for_status()
+        src = r.text
+    except requests.exceptions.RequestException as exc:
+        return False, f"download failed from {download_url} ({exc})"
+    m = re.search(r'^VERSION\s*=\s*"([^"]+)"', src, re.M)
+    remote = m.group(1) if m else None
+    if not remote or "def main()" not in src or len(src) < 5000:
+        return False, "the downloaded file doesn't look like hera.py — aborted (nothing changed)"
+    if not force and _parse_ver(remote) <= _parse_ver(VERSION):
+        return None, f"already up to date (v{VERSION})"
+    try:
+        tmp = target + ".new"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(src)
+        os.chmod(tmp, 0o755)
+        os.replace(tmp, target)
+    except OSError as exc:
+        return False, (f"couldn't write {target} ({exc}); "
+                       f"manual: curl -fsSL {download_url} -o {target}")
+    save_config({"latest_known_version": remote})
+    return True, f"updated v{VERSION} → v{remote}  ·  {target}"
+
+
+def doctor():
+    """`hera doctor` — self-update to the latest version, then check health."""
+    def line(good, label, val):
+        mark = f"{GREEN}✓{R}" if good else f"{RED}✗{R}"
+        print(f"  {mark} {label:<12} {DIM}{val}{R}")
+
+    print(f"\n{ACCENT}▌{R} {BOLD}{NAME} doctor{R}  {GREY}· update + health check{R}\n")
+
+    status, msg = _self_update(force=("--force" in sys.argv))
+    line(status is not False, "update", msg)
+    updated = status is True
+
+    line(bool(API_URL), "endpoint", API_URL or "(unset — run `hera` to set it)")
+    line(bool(API_KEY), "api key", "set" if API_KEY else "(unset)")
+
+    if API_URL and API_KEY:
+        try:
+            r = requests.post(f"{API_URL}/chat/completions",
+                              json={"model": MODEL, "messages": [{"role": "user", "content": "ping"}],
+                                    "max_tokens": 1, "stream": False},
+                              headers={"Authorization": f"Bearer {API_KEY}",
+                                       "Content-Type": "application/json"}, timeout=20)
+            line(r.ok, "model", f"{MODEL} — HTTP {r.status_code}"
+                 + ("" if r.ok else f" · {(r.text or '').strip()[:120]}"))
+        except requests.exceptions.RequestException as exc:
+            line(False, "model", f"unreachable: {exc}")
+        try:
+            resolve_identity()
+            line(True, "identity", _cfg("HERA_USER", key="user") or USER_ID)
+        except Exception:  # noqa: BLE001
+            line(True, "identity", USER_ID)
+
+    line(True, "sandbox", sandbox_label())
+    line(True, "context", f"auto-compacts near {CONTEXT_TOKENS} tok, and self-recovers on overflow")
+    if updated:
+        print(f"\n  {GREEN}Updated — re-run `hera` to use the new version.{R}\n")
+    else:
+        print()
+
+
 def main():
     global HIDE_REASONING
 
     ap = argparse.ArgumentParser(prog="hera", add_help=True,
                                  description="Hera — agentic coding CLI")
+    ap.add_argument("command", nargs="?", default=None,
+                    help="doctor — update Hera to the latest version and run a health check")
     ap.add_argument("--resume", "-r", nargs="?", const="__latest__", default=None,
                     metavar="ID", help="resume a saved session (latest if no ID)")
     ap.add_argument("--continue", "-c", dest="cont", action="store_true",
@@ -3694,8 +3822,18 @@ def main():
                     help="list saved sessions and exit")
     ap.add_argument("--serve", action="store_true",
                     help="headless JSON mode over stdin/stdout (used by the VS Code extension)")
+    ap.add_argument("--force", action="store_true",
+                    help="with `doctor`: re-download even if already up to date")
     ap.add_argument("--version", "-V", action="version", version=f"{NAME} {VERSION}")
     args = ap.parse_args()
+
+    if args.command == "doctor":
+        doctor()
+        return
+    if args.command:
+        print(f"{RED}[error] unknown command {args.command!r}. Did you mean `hera doctor`?{R}",
+              file=sys.stderr)
+        return
 
     if args.serve:
         serve_main()

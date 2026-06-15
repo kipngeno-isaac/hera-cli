@@ -332,16 +332,34 @@ chat is using.
 
 ## 6. Keeping Hera up to date
 
-The current release is **0.8.1**. On launch Hera checks the published version (at most once a
+The current release is **0.8.2**. On launch Hera checks the published version (at most once a
 day, fail-silent — it never blocks or errors startup). If a newer one is out, you'll see a
 one-line notice like:
 
 ```
-↑ update available: Hera 0.8.1 (you have 0.6.1)
+↑ update available: Hera 0.8.2 (you have 0.6.1)
   re-run the installer, or:  curl -fsSL <download_url> -o "$(command -v hera || echo ~/.local/bin/hera)"
 ```
 
-To update, either re-run the one-line installer from step 2, or pull the latest single file:
+**Easiest — just run `hera doctor`.** It updates Hera to the latest version in place and then runs
+a quick health check (endpoint, key, model, identity, sandbox):
+
+```
+$ hera doctor
+
+▌ Hera doctor  · update + health check
+
+  ✓ update       updated v0.6.1 → v0.8.2  ·  ~/.local/bin/hera
+  ✓ endpoint     http://<HOST>:8090/v1
+  ✓ api key      set
+  ✓ model        qwen3.6-35b-a3b — HTTP 200
+  ✓ identity     you@example.com
+  ✓ sandbox      bwrap — fs confined to cwd, network on
+  ✓ context      auto-compacts near 32000 tok, and self-recovers on overflow
+```
+
+`hera doctor --force` re-downloads even if you're already current. Or update manually — re-run the
+one-line installer from step 2, or pull the latest single file:
 
 ```bash
 curl -fsSL http://<HOST>:8081/hera.py -o "$(command -v hera || echo ~/.local/bin/hera)"
@@ -350,6 +368,10 @@ curl -fsSL http://<HOST>:8081/hera.py -o "$(command -v hera || echo ~/.local/bin
 
 Your config and saved sessions are untouched by an update. Set `HERA_NO_UPDATE_CHECK=1` to silence
 the notice.
+
+> **No more "context size exceeded" errors.** If a long session or a big file read fills the
+> 32k-token window, Hera now **auto-compacts the history and retries** instead of failing the turn —
+> so the old `400 Bad Request … exceeds the available context size` is handled for you.
 
 ---
 

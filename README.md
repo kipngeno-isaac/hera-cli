@@ -292,21 +292,29 @@ the live catalog the proxy is serving.
 
 ## Updating
 
-Current release: **0.8.1**. On launch Hera checks the published version (at most once a day,
+Current release: **0.8.2**. On launch Hera checks the published version (at most once a day,
 fail-silent) and prints a one-line notice when a newer one is out:
 
 ```
-↑ update available: Hera 0.8.1 (you have 0.6.1)
+↑ update available: Hera 0.8.2 (you have 0.6.1)
   re-run the installer, or:  curl -fsSL <download_url> -o "$(command -v hera || echo ~/.local/bin/hera)"
 ```
 
-To update, re-run the one-line installer, or pull the single file directly:
+**The simplest way is `hera doctor`** — it updates Hera in place to the latest version and then
+runs a health check (endpoint, key, model, identity, sandbox). `hera doctor --force` re-downloads
+even when already current. To update manually, re-run the one-line installer or pull the single
+file directly:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jones0011738/hera-cli/main/hera.py -o "$(command -v hera || echo ~/.local/bin/hera)"
 ```
 
 Your config and saved sessions are untouched. Silence the notice with `HERA_NO_UPDATE_CHECK=1`.
+
+**Context limits are handled automatically.** When a long session or a large file read approaches
+the model's context window, Hera auto-compacts the conversation (and self-heals a context-overflow
+error by compacting and retrying), so you won't hit the old `400 … exceeds the available context
+size` failure.
 
 ---
 
