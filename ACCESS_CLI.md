@@ -304,10 +304,25 @@ can also preset it with `HERA_AUTO_MODE=read|edit|all`.)
 ### Plan mode, to-dos, and next-step tips
 
 Like Claude Code, Hera lays out a **to-do checklist** (`todo_write`) for multi-step tasks and
-updates it live (○ pending → ▸ in-progress → ✔ done; `/todos` reprints it). **Plan mode**
-(`/plan` or `HERA_PLAN=1`) makes it investigate read-only and propose a numbered plan before
-touching anything — file edits and commands stay disabled until you `/plan` again to approve.
-After a task that used tools, it prints a few **next-step suggestions**.
+updates it live (○ pending → ▸ in-progress → ✔ done; `/todos` reprints it). After a task that used
+tools, it prints a few **next-step suggestions**.
+
+**Plan mode** (`/plan` or `HERA_PLAN=1`) is the full Claude-Code flow: Hera investigates
+**read-only** — no edits, commands, or installs — then presents a plan and asks you to proceed:
+
+```
+▌ Ready to code?  Here's the plan:
+  1. Add the /auth/callback route in app.py
+  2. Store the token in the session
+  3. Add a logout button to the navbar
+
+  [1] yes, proceed   [2] yes + auto-accept edits   [3] no, keep planning:
+```
+
+Pick **1** to approve and let it implement (it leaves plan mode automatically), **2** to approve
+*and* switch this project to auto-accept edits (`/auto edit`), or **3** to keep refining — type
+feedback and it re-plans. Nothing is changed until you approve. Toggle the mode anytime with
+`/plan`.
 
 ### Sandboxing & permissions
 
@@ -372,12 +387,12 @@ chat is using.
 
 ## 6. Keeping Hera up to date
 
-The current release is **0.8.6**. On launch Hera checks the published version (at most once a
+The current release is **0.8.7**. On launch Hera checks the published version (at most once a
 day, fail-silent — it never blocks or errors startup). If a newer one is out, you'll see a
 one-line notice like:
 
 ```
-↑ update available: Hera 0.8.6 (you have 0.6.1)
+↑ update available: Hera 0.8.7 (you have 0.6.1)
   re-run the installer, or:  curl -fsSL <download_url> -o "$(command -v hera || echo ~/.local/bin/hera)"
 ```
 
@@ -389,7 +404,7 @@ $ hera doctor
 
 ▌ Hera doctor  · update + health check
 
-  ✓ update       updated v0.6.1 → v0.8.6  ·  ~/.local/bin/hera
+  ✓ update       updated v0.6.1 → v0.8.7  ·  ~/.local/bin/hera
   ✓ endpoint     http://<HOST>:8090/v1
   ✓ api key      set
   ✓ model        qwen3.6-35b-a3b — HTTP 200

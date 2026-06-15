@@ -237,11 +237,16 @@ with `HERA_AUTO_MODE=read|edit|all`.
 
 For multi-step work Hera keeps a live **to-do checklist** (`todo_write`; ○ → ▸ → ✔, reprint with
 `/todos`) — the same pattern Claude Code uses — and prints a few **next-step suggestions** when a
-task finishes. **Plan mode** (`/plan` or `HERA_PLAN=1`) makes it research read-only and propose a
-numbered plan first; edits and commands stay blocked until you `/plan` again to approve. When the
-conversation nears the context window it **auto-compacts** (tune with `HERA_CONTEXT_TOKENS` /
-`HERA_AUTO_COMPACT_AT`). Set `HERA_PRICE_IN` / `HERA_PRICE_OUT` (USD per 1M tokens) to see an
-estimated **`$` cost** in the summaries and `/tokens`.
+task finishes.
+
+**Plan mode** (`/plan` or `HERA_PLAN=1`) is the full Claude-Code flow: Hera researches read-only
+(no edits/commands), then presents a plan and asks **“Ready to code?”** with `[1] yes, proceed`,
+`[2] yes + auto-accept edits`, `[3] no, keep planning`. It implements only after you approve (and
+leaves plan mode automatically); option 3 lets you give feedback and it re-plans.
+
+When the conversation nears the context window it **auto-compacts** (tune with
+`HERA_CONTEXT_TOKENS` / `HERA_AUTO_COMPACT_AT`). Set `HERA_PRICE_IN` / `HERA_PRICE_OUT` (USD per 1M
+tokens) to see an estimated **`$` cost** in the summaries and `/tokens`.
 
 ## Sandboxing & permissions
 
@@ -311,11 +316,11 @@ the live catalog the proxy is serving.
 
 ## Updating
 
-Current release: **0.8.6**. On launch Hera checks the published version (at most once a day,
+Current release: **0.8.7**. On launch Hera checks the published version (at most once a day,
 fail-silent) and prints a one-line notice when a newer one is out:
 
 ```
-↑ update available: Hera 0.8.6 (you have 0.6.1)
+↑ update available: Hera 0.8.7 (you have 0.6.1)
   re-run the installer, or:  curl -fsSL <download_url> -o "$(command -v hera || echo ~/.local/bin/hera)"
 ```
 

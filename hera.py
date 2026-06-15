@@ -152,7 +152,7 @@ def save_config(updates):
         pass
 
 
-VERSION = "0.8.6"   # bump on every released change; mirrored in cli/VERSION
+VERSION = "0.8.7"   # bump on every released change; mirrored in cli/VERSION
 NAME    = _env("HERA_NAME", default="Hera")
 # No server host is baked into the source (so this repo can be public, revealing
 # neither key nor host). Each user supplies the endpoint + key once — via env
@@ -1249,8 +1249,8 @@ def approve(name, args):
     """Return True to run the tool, or a string denial reason."""
     # Plan mode: block anything that changes state until the user approves.
     if PLAN_MODE and name in SIDE_EFFECTS:
-        return ("plan mode is on — outline the plan and stop. Modifying tools stay disabled "
-                "until the user approves (they exit plan mode with /plan).")
+        return ("plan mode is on — investigate read-only, then call exit_plan_mode with your "
+                "plan for the user to approve. Modifying tools stay disabled until then.")
 
     # Fine-grained permission rules (from config) take precedence over YOLO/allowlist.
     decision = _perm_decision(name, args)
@@ -1815,9 +1815,12 @@ def _exec_call(c, indent=""):
     snap = _snapshot(args.get("path", "")) if name in ("write_file", "edit_file") else None
     # Show a live whimsy spinner while the tool runs in the "background" — fast
     # tools (read_file, list_dir) finish before it's noticeable; slow ones
-    # (run_bash, web_search, web_fetch, task) get visible activity.
-    tspin = Spinner()
-    tspin.start()
+    # (run_bash, web_search, web_fetch, task) get visible activity. Skip it for
+    # tools that prompt the user themselves (exit_plan_mode), so the spinner
+    # doesn't fight their input prompt.
+    tspin = None if name == "exit_plan_mode" else Spinner()
+    if tspin:
+        tspin.start()
     try:
         output = TOOLS[name](**args)
     except TypeError as exc:
@@ -1825,7 +1828,8 @@ def _exec_call(c, indent=""):
     except Exception as exc:  # noqa: BLE001 — surface to the model
         output = f"[error] {type(exc).__name__}: {exc}"
     finally:
-        tspin.stop()
+        if tspin:
+            tspin.stop()
     if snap is not None and not str(output).startswith("[error]"):
         push_checkpoint(args.get("path", ""), snap, name)
     preview = (output.splitlines()[0] if output else "(no output)")[:100]
@@ -2027,6 +2031,67 @@ TOOL_SCHEMAS.append({"type": "function", "function": {
                       "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]},
                   }, "required": ["content", "status"]}},
     }, "required": ["todos"]},
+}})
+
+
+# ----- plan mode: present a plan and get approval to execute (Claude-Code style)
+_PLAN_APPROVER = None  # set to a serve approver in --serve; terminal prompt otherwise
+
+
+def _confirm_plan(plan):
+    """Show the plan, return (decision, feedback) where decision is
+    'yes' | 'auto' | 'no'. Pluggable so --serve can route to the editor."""
+    if _PLAN_APPROVER is not None:
+        return _PLAN_APPROVER(plan)
+    print(f"\n{ACCENT}▌{R} {BOLD}Ready to code?{R} {DIM}Here's the plan:{R}\n")
+    for ln in (plan or "(no plan provided)").splitlines():
+        print(f"  {ln}")
+    try:
+        ans = input(f"\n{BOLD}  [1] yes, proceed   [2] yes + auto-accept edits   "
+                    f"[3] no, keep planning:{R} ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return "no", ""
+    if ans in ("1", "y", "yes", ""):
+        return "yes", ""
+    if ans in ("2", "a", "auto"):
+        return "auto", ""
+    if ans in ("3", "n", "no"):
+        return "no", ""
+    return "no", ans  # any other text → keep planning, with that as feedback
+
+
+def tool_exit_plan_mode(plan="", **_ignored):
+    """Present the finished plan to the user and ask whether to proceed. On
+    approval, leave plan mode so the implementation can begin."""
+    global PLAN_MODE, AUTO_MODE
+    if not PLAN_MODE:
+        return "Not in plan mode — go ahead and implement directly."
+    decision, feedback = _confirm_plan(plan or "(no plan text provided)")
+    if decision == "no":
+        msg = ("The user is NOT ready — keep planning and do not make any changes yet.")
+        if feedback:
+            msg += f" Their feedback: {feedback}"
+        return msg + " Revise the plan and call exit_plan_mode again when ready."
+    PLAN_MODE = False
+    if decision == "auto":
+        AUTO_MODE = "edit"
+        _save_auto_mode("edit")
+        return ("Plan APPROVED and the user chose to auto-accept edits. Plan mode is OFF — "
+                "implement the plan now; file edits run without individual prompts.")
+    return ("Plan APPROVED by the user. Plan mode is OFF — implement the plan now with your "
+            "tools (edits/commands will prompt for approval as usual).")
+
+
+TOOLS["exit_plan_mode"] = tool_exit_plan_mode
+TOOL_SCHEMAS.append({"type": "function", "function": {
+    "name": "exit_plan_mode",
+    "description": ("Use ONLY in plan mode, once you've finished investigating and have a concrete "
+                    "plan. Presents your plan to the user for approval; if they approve, plan mode "
+                    "turns off and you implement it. Do not call it for pure question-answering."),
+    "parameters": {"type": "object", "properties": {
+        "plan": {"type": "string", "description": "The plan to execute, as concise markdown "
+                 "(numbered steps). Shown to the user for approval."},
+    }, "required": ["plan"]},
 }})
 
 
@@ -2852,9 +2917,11 @@ def system_prompt():
              "a checklist, then update it as you go — mark each step completed and set the next one "
              "in_progress, keeping exactly one in_progress at a time. Skip it for trivial requests.")
     if PLAN_MODE:
-        base += (" PLAN MODE IS ON. Do NOT modify files, run state-changing commands, or install "
-                 "anything. Investigate with read-only tools, then present a concise numbered plan "
-                 "of what you would do and STOP — the user will review and approve before execution.")
+        base += (" PLAN MODE IS ON. Investigate with read-only tools only — do NOT modify files, "
+                 "run state-changing commands, or install anything yet. When you have a concrete "
+                 "plan, call the exit_plan_mode tool with a short numbered plan (markdown) and STOP. "
+                 "The user approves there; on approval plan mode turns off and you implement. Use "
+                 "the tool — don't just describe the plan in prose.")
     if WEB_ENABLED:
         base += (" You have live internet access. Whenever the answer depends on information you "
                  "don't already hold — current events, recent releases, library or API docs, exact "
@@ -3428,9 +3495,12 @@ def print_help():
 #
 #   in : {"type":"prompt","text":...,"images":[dataURL,…]}
 #        | {"type":"approval","decision":"y|a|p|n","feedback":"…"}
+#        | {"type":"plan","on":bool} | {"type":"plan_decision","decision":"yes|auto|no","feedback":"…"}
+#        | {"type":"auto","mode":…} | {"type":"logout"}
 #        | {"type":"interrupt"} | {"type":"undo"} | {"type":"clear"} | {"type":"exit"}
 #   out: ready | reasoning | token | narration | tool_start | proposed_diff
-#        | approval_request | tool_end | turn_end | suggestions | info | error
+#        | approval_request | plan_review | tool_end | turn_end | todos | suggestions
+#        | auto_mode | logged_out | info | error
 #
 # A single reader thread (_serve_input_thread) demultiplexes stdin so the editor
 # can send an `interrupt` or an `approval` *while* a turn is streaming: approvals
@@ -3465,7 +3535,7 @@ def _serve_input_thread():
         t = msg.get("type")
         if t == "interrupt":
             _INTERRUPT.set()
-        elif t == "approval":
+        elif t in ("approval", "plan_decision"):
             _APPROVAL_Q.put(msg)
         elif t == "plan":
             global PLAN_MODE
@@ -3573,8 +3643,8 @@ def _serve_approve(name, args):
     # Same gating as the interactive approve(): plan mode, config permissions,
     # PreToolUse hooks, then auto mode / YOLO / allowlist — before prompting.
     if PLAN_MODE and name in SIDE_EFFECTS:
-        return ("plan mode is on — outline the plan and stop. Modifying tools stay disabled "
-                "until the user approves (they exit plan mode with /plan).")
+        return ("plan mode is on — investigate read-only, then call exit_plan_mode with your "
+                "plan for the user to approve. Modifying tools stay disabled until then.")
     decision = _perm_decision(name, args)
     if decision == "deny":
         return "denied by a permission rule"
@@ -3627,6 +3697,18 @@ def _serve_install_approver(program, plan):
             return False
         if msg.get("type") == "approval":
             return msg.get("decision", "n") in ("y", "a", "p")
+
+
+def _serve_plan_approver(plan):
+    """IDE approval for plan mode: show the plan, await the editor's decision."""
+    _emit({"type": "plan_review", "plan": plan})
+    while True:
+        msg = _APPROVAL_Q.get()
+        if msg is None:
+            return "no", ""
+        if msg.get("type") == "plan_decision":
+            d = msg.get("decision", "no")
+            return (d if d in ("yes", "auto", "no") else "no"), (msg.get("feedback") or "")
 
 
 def _serve_exec(c):
@@ -3736,13 +3818,14 @@ def _serve_run(messages):
 
 
 def serve_main():
-    global _INSTALL_APPROVER
+    global _INSTALL_APPROVER, _PLAN_APPROVER
     if not API_URL:
         _emit({"type": "error", "message": "no server set — set HERA_API_URL"})
         return
     resolve_identity()  # label sessions by the key's account email (fail-silent)
-    # Reactive missing-binary installs ask via the editor, not a terminal prompt.
+    # Reactive missing-binary installs and plan approval ask via the editor.
     _INSTALL_APPROVER = _serve_install_approver
+    _PLAN_APPROVER = _serve_plan_approver
     register_extensions(quiet=True)
     CURRENT_SESSION["id"] = new_session_id()
     CURRENT_SESSION["created"] = _now()
@@ -4184,8 +4267,8 @@ def _repl(messages, spinner):
         if cmd == "/plan":
             globals()["PLAN_MODE"] = not PLAN_MODE
             if PLAN_MODE:
-                print(f"\n{DIM}plan mode ON — I'll investigate and propose a plan; edits/commands "
-                      f"are disabled until you /plan again to approve.{R}\n")
+                print(f"\n{DIM}plan mode ON — I'll research read-only and present a plan for you to "
+                      f"approve before making any changes. Toggle off with /plan.{R}\n")
             else:
                 print(f"\n{DIM}plan mode OFF — I can edit and run again.{R}\n")
             continue

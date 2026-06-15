@@ -14,7 +14,12 @@ endpoint. It runs the model in a reason→act loop with real tools and a permiss
 aiming for Claude-Code-class behavior.
 
 ## Latest changes
-- **Version:** `0.8.6`.
+- **Version:** `0.8.7`.
+- **Claude-Code plan-mode approval flow** — new `exit_plan_mode(plan)` tool the model calls when its
+  plan is ready; `_confirm_plan` shows it and asks [1] yes / [2] yes + auto-accept edits / [3] keep
+  planning (pluggable `_PLAN_APPROVER`; terminal prompt or serve `plan_review`/`plan_decision` →
+  VS Code "Ready to code?" buttons). Approval flips `PLAN_MODE` off and implements. System prompt
+  steers the model to the tool.
 - **Fixed recurring `400 "System message must be at the beginning"`** — the shared-skills injection
   used to add a SECOND `system` message, which the Qwen template rejects; only fired when a skill
   triggered. Now the skill block is **merged into the single leading system message** (server-side
@@ -44,7 +49,7 @@ aiming for Claude-Code-class behavior.
   (`_is_context_overflow`), `compact_history()`, and retry once; `_maybe_auto_compact` also fires on
   the server's real last prompt-token count (`_LAST_PROMPT_TOKENS`). No more raw
   `400 … exceeds the available context size`.
-- **Claude-Code parity pass (0.7.0 → 0.8.6):**
+- **Claude-Code parity pass (0.7.0 → 0.8.7):**
   - **To-do tracking** — `todo_write` tool maintains a live checklist (CLI render + `todos`
     serve event → "Plan" block in VS Code). The system prompt nudges it for multi-step tasks.
   - **End-of-task next-step tips** — `_generate_suggestions` (called with `enable_thinking:false`)

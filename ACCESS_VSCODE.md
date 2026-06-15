@@ -44,7 +44,7 @@ automatically, or you can force one explicitly with `@skill:<id>` or `/skill <id
    ```
    (Or set `hera.command` in the extension settings to an absolute path — e.g.
    `~/.local/bin/hera`, or on Windows the full path to your `hera.py` launcher.) Confirm it's
-   found: `hera --version` should print `Hera 0.8.6`.
+   found: `hera --version` should print `Hera 0.8.7`.
 3. **Credentials.** Easiest: **run `hera` once in a terminal and paste your key** (see
    [`ACCESS_CLI.md`](ACCESS_CLI.md)). That saves `~/.config/hera/config.json` (endpoint + key +
    your resolved account email), and `hera --serve` — what the extension drives — reads that file
@@ -149,6 +149,9 @@ Open the **Command Palette** (`Ctrl/Cmd+Shift+P`) and type "Hera", or use the ke
   to stop. Deny rules and plan mode still take precedence.
 - For multi-step work a **"Plan" checklist** appears and updates live (✔ done / ▸ in-progress /
   ○ pending) — the same to-do tracking as Claude Code.
+- In **plan mode** (start with `HERA_PLAN=1`, or `/plan` in a terminal session), Hera investigates
+  read-only and then shows a **"Ready to code?"** card with the plan and buttons — *Yes, proceed* /
+  *Yes + auto-accept edits* / *No, keep planning* — and only begins editing after you approve.
 - When a task finishes, a **"Next steps"** block of clickable suggestion chips appears; click one to
   drop it into the message box.
 - Per-turn token usage is shown — plus an estimated **`$` cost** when pricing is set
