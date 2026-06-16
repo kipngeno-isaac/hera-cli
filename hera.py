@@ -153,7 +153,7 @@ def save_config(updates):
         pass
 
 
-VERSION = "0.8.25"   # bump on every released change; mirrored in cli/VERSION
+VERSION = "0.8.28"   # bump on every released change; mirrored in cli/VERSION
 NAME    = _env("HERA_NAME", default="Hera")
 # No server host is baked into the source (so this repo can be public, revealing
 # neither key nor host). Each user supplies the endpoint + key once — via env
@@ -170,6 +170,8 @@ ANTHROPIC_BASE = _cfg("HERA_ANTHROPIC_BASE", key="anthropic_base",
                       default="https://api.anthropic.com").rstrip("/")
 ANTHROPIC_VERSION = _env("HERA_ANTHROPIC_VERSION", default="2023-06-01")
 MAX_OUTPUT_TOKENS = int(_env("HERA_MAX_OUTPUT_TOKENS", default="8192") or 8192)
+# Vim keybindings in the prompt editor (toggle with /vim or HERA_VIM=1).
+VIM_MODE = _truthy(_env("HERA_VIM"))
 # Vision: the main model is text-only. If a vision-capable OpenAI-compatible
 # endpoint is configured, turns that carry an attached image are routed to it;
 # otherwise images are attached but flagged as not-interpreted (see stream_turn).
@@ -570,6 +572,16 @@ AGENTS_DIR   = os.path.join(CONFIG_DIR, "agents")
 # start of every turn. See interruptible() and stream_turn().
 _INTERRUPT = threading.Event()
 _VISION_WARNED = False  # warn once per process when an image can't be interpreted
+
+# Thread-local "quiet" flag: parallel sub-agents run on worker threads and must
+# not interleave their live streaming on the shared stdout. When set, stream_turn
+# and _exec_call suppress live output (the sub-agent's result is still returned),
+# and the approval gate stops prompting (treats writes like a non-interactive run).
+_QUIET = threading.local()
+
+
+def _is_quiet():
+    return getattr(_QUIET, "on", False)
 
 
 def _text_of(content):
@@ -1867,8 +1879,15 @@ def approve(name, args):
     if name == "run_bash":
         cmd = args.get("command", "")
         if decision != "ask" and bash_allowed(cmd):
-            print(f"  {DIM}↳ auto-approved (allowlist){R}")
+            if not _is_quiet():
+                print(f"  {DIM}↳ auto-approved (allowlist){R}")
             return True
+
+    # A quiet parallel sub-agent (worker thread) can't prompt — deny anything
+    # not already auto-granted above, so it stays read-only unless YOLO/auto.
+    if _is_quiet():
+        return (f"requires approval ({name}) — a parallel sub-agent can't prompt; "
+                f"run with --yolo or auto mode to allow it")
         denied = _matches(cmd, DENY_PATTERNS)
         print(f"\n{YELL}{BOLD}⚠ approval needed{R} {DIM}(run_bash{', matches deny-pattern' if denied else ''}){R}")
         print(f"  $ {cmd}")
@@ -2291,13 +2310,17 @@ def stream_turn(messages, spinner, tools=None, model_override=None):
     line_buf = ""               # buffers content until a newline, then renders it
     md_state = {"code": False}
 
+    quiet = _is_quiet()
+
     def ensure_header():
         nonlocal started
         if not started:
+            started = True
+            if quiet:
+                return
             elapsed = spinner.stop()
             print(f"\n{ACCENT}▌{R} {BOLD}{NAME}{R}  {GREY}· {elapsed:.1f}s to first token{R}"
                   f"  {DIM}(esc to interrupt){R}\n")
-            started = True
 
     for raw in resp.iter_lines():
         if _INTERRUPT.is_set():
@@ -2331,7 +2354,7 @@ def stream_turn(messages, spinner, tools=None, model_override=None):
         reasoning = delta.get("reasoning_content", "")
         token     = delta.get("content", "")
 
-        if reasoning and not HIDE_REASONING:
+        if reasoning and not HIDE_REASONING and not quiet:
             ensure_header()
             if not in_reasoning:
                 print(f"{DIM}{ITAL}✶ thinking…{R}\n{DIM}", end="", flush=True)
@@ -2339,15 +2362,16 @@ def stream_turn(messages, spinner, tools=None, model_override=None):
             print(f"{DIM}{reasoning}{R}", end="", flush=True)
 
         if token:
-            ensure_header()
-            if in_reasoning:
-                print(f"{R}\n\n", end="", flush=True)
-                in_reasoning = False
             content.append(token)
-            line_buf += token
-            while "\n" in line_buf:
-                done, line_buf = line_buf.split("\n", 1)
-                print(render_md_line(done, md_state), flush=True)
+            if not quiet:
+                ensure_header()
+                if in_reasoning:
+                    print(f"{R}\n\n", end="", flush=True)
+                    in_reasoning = False
+                line_buf += token
+                while "\n" in line_buf:
+                    done, line_buf = line_buf.split("\n", 1)
+                    print(render_md_line(done, md_state), flush=True)
 
         for tc in delta.get("tool_calls", []):
             idx = tc.get("index", 0)
@@ -2360,9 +2384,9 @@ def stream_turn(messages, spinner, tools=None, model_override=None):
             if fn.get("arguments"):
                 slot["arguments"] += fn["arguments"]
 
-    if in_reasoning:
+    if in_reasoning and not quiet:
         print(f"{R}\n", end="", flush=True)
-    if line_buf:  # flush any trailing partial line
+    if line_buf and not quiet:  # flush any trailing partial line
         print(render_md_line(line_buf, md_state), flush=True)
 
     final_content = "".join(content)
@@ -2373,8 +2397,9 @@ def stream_turn(messages, spinner, tools=None, model_override=None):
         final_content, recovered = _extract_text_tool_calls(final_content)
         if recovered:
             structured = recovered
-            print(f"{DIM}  ↳ recovered {len(recovered)} tool call(s) from text "
-                  f"(server didn't structure them){R}", flush=True)
+            if not quiet:
+                print(f"{DIM}  ↳ recovered {len(recovered)} tool call(s) from text "
+                      f"(server didn't structure them){R}", flush=True)
 
     return {
         "content": final_content,
@@ -2760,6 +2785,7 @@ def _sanitize_history(messages):
 def _exec_call(c, indent=""):
     """Execute one tool call: print, approve, checkpoint, run. Returns output string."""
     name = c["name"]
+    quiet = _is_quiet()  # parallel sub-agent: suppress interleaving live output
     try:
         args = json.loads(c["arguments"] or "{}")
     except json.JSONDecodeError:
@@ -2767,16 +2793,20 @@ def _exec_call(c, indent=""):
 
     # Announce the action in plain language first, then the tool card, so a
     # reader can follow what Hera is doing without parsing tool internals.
-    print(f"\n{indent}{ACCENT}→{R} {_narrate(name, args)}")
-    print(f"{indent}{TEAL}◆{R} {BOLD}{name}{R}  {GREY}{_preview_call(name, args).splitlines()[0]}{R}")
+    if not quiet:
+        print(f"\n{indent}{ACCENT}→{R} {_narrate(name, args)}")
+        print(f"{indent}{TEAL}◆{R} {BOLD}{name}{R}  "
+              f"{GREY}{_preview_call(name, args).splitlines()[0]}{R}")
 
     if name not in TOOLS:
-        print(f"{indent}  {GREY}⎿{R} {RED}unknown tool{R}")
+        if not quiet:
+            print(f"{indent}  {GREY}⎿{R} {RED}unknown tool{R}")
         return f"[error] unknown tool: {name}"
 
     verdict = approve(name, args)
     if verdict is not True:
-        print(f"{indent}  {GREY}⎿{R} {RED}✗ {verdict}{R}")
+        if not quiet:
+            print(f"{indent}  {GREY}⎿{R} {RED}✗ {verdict}{R}")
         return f"[denied] {verdict}"
 
     # Snapshot file state before a mutating edit so /undo can revert it.
@@ -2785,8 +2815,8 @@ def _exec_call(c, indent=""):
     # tools (read_file, list_dir) finish before it's noticeable; slow ones
     # (run_bash, web_search, web_fetch, task) get visible activity. Skip it for
     # tools that prompt the user themselves (exit_plan_mode), so the spinner
-    # doesn't fight their input prompt.
-    tspin = None if name == "exit_plan_mode" else Spinner()
+    # doesn't fight their input prompt — and for quiet parallel sub-agents.
+    tspin = None if (name == "exit_plan_mode" or quiet) else Spinner()
     if tspin:
         tspin.start()
     try:
@@ -2802,9 +2832,10 @@ def _exec_call(c, indent=""):
         push_checkpoint(args.get("path", ""), snap, name)
     preview = (output.splitlines()[0] if output else "(no output)")[:100]
     is_err = str(output).startswith("[error]")
-    print(f"{indent}  {GREY}⎿{R} {(RED if is_err else GREY)}{preview}{R}")
+    if not quiet:
+        print(f"{indent}  {GREY}⎿{R} {(RED if is_err else GREY)}{preview}{R}")
     # Show the refreshed checklist right after a to-do update.
-    if name == "todo_write" and TODOS and not is_err:
+    if name == "todo_write" and TODOS and not is_err and not quiet:
         print(_render_todos_text())
     _run_hooks("PostToolUse", name, args, output)
     _emit_telemetry("tool", tool=name, error=is_err)
@@ -2825,7 +2856,7 @@ def _agent_model(agent):
     return None
 
 
-def run_subagent(description, agent=None, model=None):
+def run_subagent(description, agent=None, model=None, quiet=False):
     """Run a focused nested agent on `description`; return its final answer text.
 
     The sub-agent has every tool except `task` itself (so it can't recurse),
@@ -2834,56 +2865,95 @@ def run_subagent(description, agent=None, model=None):
     definition (from ~/.config/hera/agents/<name>.md) can supply its own system
     prompt, restrict the tool set via a `tools:` frontmatter list, and pick a
     different `model:` (overridable per call via the task tool's `model` arg).
+
+    `quiet=True` runs it on the calling worker thread without live output (used
+    by parallel delegation) — its result is still returned to the parent.
     """
-    sub_schemas = [s for s in TOOL_SCHEMAS if s["function"]["name"] != "task"]
-    sys_prompt = (f"You are a focused sub-agent of {NAME}. Complete the delegated task using your "
-                  f"tools in {os.getcwd()}, then reply with a concise summary of what you found or "
-                  f"changed. Be thorough but terse.")
-    label = "sub-agent"
-    sub_model = model or _agent_model(agent)
-    if agent and agent in CUSTOM_AGENTS:
-        meta, body = _parse_frontmatter(CUSTOM_AGENTS[agent])
-        if body.strip():
-            sys_prompt = body.strip() + f"\n\nWork in {os.getcwd()}. Reply with a concise summary."
-        label = f"agent:{agent}"
-        allowed = [t.strip() for t in (meta.get("tools", "")).replace(",", " ").split() if t.strip()]
-        if allowed:
-            sub_schemas = [s for s in sub_schemas if s["function"]["name"] in allowed]
-    msgs = [
-        {"role": "system", "content": sys_prompt},
-        {"role": "user", "content": description},
-    ]
-    spinner = Spinner()
-    tag = f"{label}" + (f" ({sub_model})" if sub_model else "")
-    print(f"\n  {BLUE}⤷ {tag} started{R} {DIM}{description[:70]}{R}")
-    final = ""
-    for _ in range(MAX_STEPS):
-        spinner.start()
-        res = stream_turn(msgs, spinner, tools=sub_schemas, model_override=sub_model)
-        if res is None:
-            return "[sub-agent error] transport failure"
-        _account(res.get("usage"))
-        calls = res["tool_calls"]
-        am = {"role": "assistant", "content": res["content"] or ""}
-        if calls:
-            am["tool_calls"] = [{"id": c["id"], "type": "function",
-                                 "function": {"name": c["name"],
-                                              "arguments": _normalize_tool_args(c["arguments"])}}
-                                for c in calls]
-        msgs.append(am)
-        if not calls:
-            final = res["content"] or ""
-            break
-        for c in calls:
-            out = _exec_call(c, indent="    ")
-            msgs.append({"role": "tool", "tool_call_id": c["id"], "content": out})
-    print(f"  {BLUE}⤷ {label} done{R}")
-    _run_hooks("SubagentStop", name=label, output=final)
-    return final or "(sub-agent produced no result)"
+    if quiet:
+        _QUIET.on = True
+    try:
+        sub_schemas = [s for s in TOOL_SCHEMAS if s["function"]["name"] != "task"]
+        sys_prompt = (f"You are a focused sub-agent of {NAME}. Complete the delegated task using "
+                      f"your tools in {os.getcwd()}, then reply with a concise summary of what you "
+                      f"found or changed. Be thorough but terse.")
+        label = "sub-agent"
+        sub_model = model or _agent_model(agent)
+        if agent and agent in CUSTOM_AGENTS:
+            meta, body = _parse_frontmatter(CUSTOM_AGENTS[agent])
+            if body.strip():
+                sys_prompt = body.strip() + f"\n\nWork in {os.getcwd()}. Reply with a concise summary."
+            label = f"agent:{agent}"
+            allowed = [t.strip() for t in (meta.get("tools", "")).replace(",", " ").split()
+                       if t.strip()]
+            if allowed:
+                sub_schemas = [s for s in sub_schemas if s["function"]["name"] in allowed]
+        msgs = [
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": description},
+        ]
+        spinner = Spinner()
+        tag = f"{label}" + (f" ({sub_model})" if sub_model else "")
+        if not quiet:
+            print(f"\n  {BLUE}⤷ {tag} started{R} {DIM}{description[:70]}{R}")
+        final = ""
+        for _ in range(MAX_STEPS):
+            if not quiet:
+                spinner.start()
+            res = stream_turn(msgs, spinner, tools=sub_schemas, model_override=sub_model)
+            if res is None:
+                return "[sub-agent error] transport failure"
+            _account(res.get("usage"))
+            calls = res["tool_calls"]
+            am = {"role": "assistant", "content": res["content"] or ""}
+            if calls:
+                am["tool_calls"] = [{"id": c["id"], "type": "function",
+                                     "function": {"name": c["name"],
+                                                  "arguments": _normalize_tool_args(c["arguments"])}}
+                                    for c in calls]
+            msgs.append(am)
+            if not calls:
+                final = res["content"] or ""
+                break
+            for c in calls:
+                out = _exec_call(c, indent="    ")
+                msgs.append({"role": "tool", "tool_call_id": c["id"], "content": out})
+        if not quiet:
+            print(f"  {BLUE}⤷ {label} done{R}")
+        _run_hooks("SubagentStop", name=label, output=final)
+        return final or "(sub-agent produced no result)"
+    finally:
+        if quiet:
+            _QUIET.on = False
 
 
-def tool_task(description, agent=None, model=None, **_ignored):
-    return run_subagent(description, agent=agent, model=model)
+def run_subagents_parallel(specs):
+    """Run several sub-agents concurrently (each quiet, on its own thread) and
+    return their combined results. `specs` is a list of {description, agent?, model?}."""
+    results = [None] * len(specs)
+
+    def worker(i, spec):
+        results[i] = run_subagent(spec.get("description", ""), agent=spec.get("agent"),
+                                  model=spec.get("model"), quiet=True)
+
+    threads = []
+    for i, spec in enumerate(specs):
+        t = threading.Thread(target=worker, args=(i, spec), daemon=True)
+        t.start()
+        threads.append(t)
+    print(f"\n  {BLUE}⤷ running {len(specs)} sub-agents in parallel…{R}")
+    for t in threads:
+        t.join()
+    print(f"  {BLUE}⤷ {len(specs)} sub-agents done{R}")
+    return "\n\n".join(f"### sub-agent {i + 1}"
+                       + (f" ({specs[i].get('agent')})" if specs[i].get('agent') else "")
+                       + f"\n{results[i]}" for i in range(len(specs)))
+
+
+def tool_task(description=None, agent=None, model=None, tasks=None, **_ignored):
+    # `tasks` (a list) runs several sub-agents in parallel; otherwise a single one.
+    if isinstance(tasks, list) and tasks:
+        return run_subagents_parallel(tasks)
+    return run_subagent(description or "", agent=agent, model=model)
 
 
 TOOLS["task"] = tool_task
@@ -2898,7 +2968,14 @@ TOOL_SCHEMAS.append({"type": "function", "function": {
         "description": {"type": "string", "description": "The subtask, with enough context to act on"},
         "agent": {"type": "string", "description": "Optional named agent to use"},
         "model": {"type": "string", "description": "Optional model id to run this sub-agent on"},
-    }, "required": ["description"]},
+        "tasks": {"type": "array", "description": ("Optional: run several sub-agents IN PARALLEL. "
+                  "Each item is an object with description (and optional agent/model). Use this "
+                  "for independent subtasks you want done concurrently."),
+                  "items": {"type": "object", "properties": {
+                      "description": {"type": "string"},
+                      "agent": {"type": "string"},
+                      "model": {"type": "string"}}, "required": ["description"]}},
+    }},
 }})
 
 
@@ -4671,6 +4748,7 @@ SLASH_COMMANDS = [
     ("/sessions",  "",          "list saved conversations (by their first message)"),
     ("/resume",    "",          "pick a past conversation to resume (by its first message)"),
     ("/reasoning", "",          "toggle streaming of my thinking"),
+    ("/vim",       "",          "toggle vim keybindings in the prompt editor"),
     ("/think",     "[level]",   "thinking budget: off / normal / hard"),
     ("/output-style", "[name]", "answer style: default / concise / explanatory / learning"),
     ("/statusline", "",         "show the custom status-line command"),
@@ -4770,6 +4848,92 @@ def _menu_matches(buf):
     return [c for c in SLASH_COMMANDS if c[0].startswith(buf.lower())]
 
 
+# ── Vim keybindings (pure state machine; positions are insert-style 0..len) ────
+def _vim_next_word(buf, pos):
+    n = len(buf)
+    i = pos
+    if i >= n:
+        return n
+    if buf[i].isspace():
+        while i < n and buf[i].isspace():
+            i += 1
+    else:
+        while i < n and not buf[i].isspace():
+            i += 1
+        while i < n and buf[i].isspace():
+            i += 1
+    return i
+
+
+def _vim_prev_word(buf, pos):
+    i = pos - 1
+    while i > 0 and buf[i].isspace():
+        i -= 1
+    while i > 0 and not buf[i - 1].isspace():
+        i -= 1
+    return max(i, 0)
+
+
+def _vim_word_end(buf, pos):
+    n = len(buf)
+    i = pos + 1
+    while i < n and buf[i].isspace():
+        i += 1
+    while i + 1 < n and not buf[i + 1].isspace():
+        i += 1
+    return min(i, n)
+
+
+def vim_normal_key(buf, pos, key, pending=""):
+    """Apply one NORMAL-mode key. Returns (buf, pos, mode, pending, action) where
+    mode is 'normal' or 'insert' and action is None or 'submit'. Pure/testable."""
+    # An operator (d/c) is pending — this key is its motion.
+    if pending in ("d", "c"):
+        to_insert = pending == "c"
+        if key == pending:                       # dd / cc → whole line
+            return ("", 0, "insert" if to_insert else "normal", "", None)
+        end = {"w": _vim_next_word(buf, pos), "b": _vim_prev_word(buf, pos),
+               "e": _vim_word_end(buf, pos), "$": len(buf), "0": 0,
+               "l": min(len(buf), pos + 1), "h": max(0, pos - 1)}.get(key)
+        if end is None:
+            return (buf, pos, "normal", "", None)  # unknown motion cancels op
+        lo, hi = sorted((pos, end))
+        return (buf[:lo] + buf[hi:], lo, "insert" if to_insert else "normal", "", None)
+    if key in ("d", "c"):
+        return (buf, pos, "normal", key, None)
+    if key == "ENTER":
+        return (buf, pos, "normal", "", "submit")
+    if key == "i":
+        return (buf, pos, "insert", "", None)
+    if key == "a":
+        return (buf, min(len(buf), pos + 1), "insert", "", None)
+    if key == "I":
+        return (buf, 0, "insert", "", None)
+    if key == "A":
+        return (buf, len(buf), "insert", "", None)
+    if key == "x":
+        return (buf[:pos] + buf[pos + 1:], pos, "normal", "", None)
+    if key == "D":
+        return (buf[:pos], pos, "normal", "", None)
+    if key == "C":
+        return (buf[:pos], pos, "insert", "", None)
+    if key == "h":
+        return (buf, max(0, pos - 1), "normal", "", None)
+    if key == "l":
+        return (buf, min(len(buf), pos + 1), "normal", "", None)
+    if key == "0":
+        return (buf, 0, "normal", "", None)
+    if key == "$":
+        return (buf, len(buf), "normal", "", None)
+    if key == "w":
+        return (buf, _vim_next_word(buf, pos), "normal", "", None)
+    if key == "b":
+        return (buf, _vim_prev_word(buf, pos), "normal", "", None)
+    if key == "e":
+        return (buf, _vim_word_end(buf, pos), "normal", "", None)
+    return (buf, pos, "normal", "", None)  # ignore everything else
+
+
 class RawLineReader:
     """One-line raw-mode editor with the slash-command dropdown."""
 
@@ -4783,6 +4947,8 @@ class RawLineReader:
         self.hist = len(INPUT_HISTORY)  # index into history (== len means "current")
         self.stash = ""       # buffer stashed while browsing history
         self.prev_row = 0     # screen-row offset of the cursor after last render
+        self.vim_mode = "insert"   # when VIM_MODE: 'insert' or 'normal'
+        self.vim_pending = ""      # a pending vim operator (d/c)
 
     # — key decoding ————————————————————————————————————————————————
     def _key(self):
@@ -4894,6 +5060,15 @@ class RawLineReader:
                 active = _menu_active(self.buf)
                 matches = _menu_matches(self.buf) if active else []
 
+                # Vim NORMAL mode: route printable keys through the vim engine.
+                if (VIM_MODE and self.vim_mode == "normal" and not (active and matches)
+                        and isinstance(key, str) and len(key) == 1 and key >= " "):
+                    self.buf, self.pos, self.vim_mode, self.vim_pending, act = \
+                        vim_normal_key(self.buf, self.pos, key, self.vim_pending)
+                    if act == "submit":
+                        self._close(); return self.buf
+                    self.sel = 0; self._refresh(); continue
+
                 if key == "ENTER":
                     if active and matches:
                         name, args, _ = matches[self.sel]
@@ -4948,6 +5123,10 @@ class RawLineReader:
                 if key == "CTRL_W":
                     self._delete_word(); self._refresh(); continue
                 if key == "ESC":
+                    if VIM_MODE:               # ESC → NORMAL mode (vim), keep the line
+                        self.vim_mode = "normal"; self.vim_pending = ""
+                        self.pos = max(0, self.pos - 1); self.sel = 0
+                        self._refresh(); continue
                     self.buf = ""; self.pos = 0; self.sel = 0; self._refresh(); continue
                 if key == "CTRL_C":
                     self._close(); raise KeyboardInterrupt
@@ -6136,6 +6315,11 @@ def _repl(messages, spinner):
             HIDE_REASONING = not HIDE_REASONING
             state = "hidden" if HIDE_REASONING else "visible"
             print(f"\n{DIM}reasoning is now {state}.{R}\n")
+            continue
+        if cmd == "/vim":
+            globals()["VIM_MODE"] = not VIM_MODE
+            print(f"\n{DIM}vim keybindings {'ON' if VIM_MODE else 'OFF'} — each prompt starts in "
+                  f"INSERT; press {R}{CYAN}Esc{R}{DIM} for NORMAL (h l 0 $ w b e i a A I x D dd dw cw).{R}\n")
             continue
         if cmd == "/think" or cmd.startswith("/think "):
             arg = user_input[6:].strip().lower()

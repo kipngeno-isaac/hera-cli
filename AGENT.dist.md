@@ -14,13 +14,26 @@ endpoint. It runs the model in a reason→act loop with real tools and a permiss
 aiming for Claude-Code-class behavior.
 
 ## Latest changes
-- **Version:** `0.8.25`.
+- **Version:** `0.8.28`.
+- **Live MCP-OAuth test** — `test_mcp_oauth_live` stands up a throwaway local token server and
+  drives `mcp_oauth_login` through the real callback + PKCE token exchange (success and a
+  PKCE-mismatch rejection), faking only the browser consent. Resolves the earlier "untested live
+  flow" caveat.
+- **Vim keybindings** (was deferred) — `/vim` or `HERA_VIM=1`. Each prompt starts in INSERT;
+  Esc → NORMAL. `vim_normal_key` is a pure, tested state machine: motions `h l 0 $ w b e`,
+  mode switches `i a I A`, edits `x D C`, operators `dd dw d$ cw cc` (`d`/`c` + motion). Wired
+  into `RawLineReader` (printable keys routed through it in NORMAL mode; Esc keeps the line).
+- **Parallel sub-agents** (was deferred) — the `task` tool accepts a `tasks` array and runs each
+  sub-agent concurrently (`run_subagents_parallel`, one daemon thread each), returning combined
+  results. A thread-local quiet flag (`_QUIET`/`_is_quiet`) suppresses interleaved live streaming
+  in `stream_turn`/`_exec_call`; the approval gate denies un-pre-authorized writes on worker
+  threads (can't prompt), so parallel agents are read-only unless YOLO/auto mode is on.
 - **Interactive MCP OAuth (auth-code + PKCE)** — `/mcp login <server>` or `hera mcp-login <server>`:
   `_pkce_pair` (S256), `_oauth_authorize_url`, RFC 8414 `_discover_oauth_endpoints`, a localhost
   callback, then token exchange; `_save_mcp_token` writes the token to mcp.json (used by
-  `_mcp_headers`). Endpoints from the server's `oauth` block or discovery. NOTE: the live
-  browser/exchange flow is best-effort and **not** covered by tests (no OAuth server here); the
-  PKCE/URL/discovery/token-save units are tested.
+  `_mcp_headers`). Endpoints from the server's `oauth` block or discovery. The full flow is now
+  exercised end-to-end against a throwaway local IdP (`test_mcp_oauth_live`) — PKCE, callback,
+  token exchange, and save — faking only the browser consent redirect.
 - **Pluggable web search** — `HERA_SEARCH_PROVIDER`: `duckduckgo` (default, keyless) or higher-
   quality `tavily` / `brave` / `searxng` (`HERA_SEARCH_KEY`/`HERA_SEARCH_URL`). Providers return
   `{title,url,snippet}` via `_format_results`; non-DDG providers fall back to DDG on error.
