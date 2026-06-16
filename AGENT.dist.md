@@ -14,7 +14,47 @@ endpoint. It runs the model in a reason→act loop with real tools and a permiss
 aiming for Claude-Code-class behavior.
 
 ## Latest changes
-- **Version:** `0.8.10`.
+- **Version:** `0.8.14`.
+- **Hooks & UX depth (Claude-Code parity, group 4/4):**
+  - **More hook events** — `_run_hooks` now also fires `UserPromptSubmit`, `SessionStart`,
+    `SessionEnd`, `PreCompact`, `SubagentStop`, `Notification`. `UserPromptSubmit` can veto a
+    prompt (non-zero exit) and its stdout (plus `SessionStart`'s) is injected as context via
+    `_HOOK_CONTEXT`/`_inject_context`. `Notification` fires at interactive approval gates.
+  - **Output styles** — `/output-style default|concise|explanatory|learning` (or a custom
+    `~/.config/hera/output-styles/<name>.md`); appended to the system prompt. `HERA_OUTPUT_STYLE`.
+  - **Thinking budget** — `/think off|normal|hard` → `enable_thinking` chat-template kwarg on
+    every request (`_think_payload`). `HERA_THINK`.
+  - **Status line** — `HERA_STATUSLINE`/config `statusline`: a command fed session JSON whose
+    stdout prints above the prompt each turn (`_render_statusline`). `/statusline` shows it.
+- **Editing & file tools (Claude-Code parity, group 3/4):**
+  - **`multi_edit`** — several exact-string replacements to one file atomically (all-or-nothing;
+    `tool_multi_edit`). New tool + schema; in `_EDIT_TOOLS`/`SIDE_EFFECTS` so approval, undo,
+    rewind, backstop and verify all cover it. Combined diff preview.
+  - **PDF reading** — `read_file` on a `.pdf` extracts text via `pdftotext` (poppler) or a
+    pure-Python `pypdf`/`PyPDF2` fallback (`_read_pdf`); helpful install hint if neither is present.
+  - **Jupyter notebooks** — `read_file` on `.ipynb` renders cells + outputs (`_render_notebook`);
+    new **`notebook_edit`** tool (replace/insert/delete a cell; clears stale outputs on replace).
+- **Memory system (Claude-Code parity, group 2/4):**
+  - **Hierarchy** — `_memory_sources()` loads enterprise (`/etc/hera/HERA.md` or
+    `HERA_ENTERPRISE_MEMORY`) → user (`~/.config/hera/HERA.md`) → the project tree (filesystem
+    root down to cwd, first of `HERA.md`/`AGENTS.md`/`AGENT.md` per level). Assembled into the
+    system prompt scope-labelled, most-specific last (so cwd overrides). Per-file/total caps.
+  - **`@imports`** — `_expand_memory_imports` inlines `@path` lines recursively (depth- and
+    cycle-guarded), like CLAUDE.md imports.
+  - **`#` quick-add** — typing `# <fact>` appends to project `./HERA.md`; `# user <fact>` →
+    user memory (`add_memory`). **`/memory`** lists the loaded hierarchy.
+- **Harness robustness (Claude-Code parity, group 1/4):**
+  - **Text-format tool-call fallback** — if the server returns no structured
+    `tool_calls` but leaks them into the text (Hermes/Qwen `<tool_call>{…}</tool_call>` or
+    a fenced JSON object), `_extract_text_tool_calls` recovers them so the agent still acts.
+    Balanced-brace scanner (`_scan_json_objects`, string/escape aware); only objects naming a
+    *registered* tool are accepted, so illustrative JSON in prose isn't hijacked. Wired into
+    `stream_turn` and `_serve_stream`.
+  - **Conversation + code `/rewind`** — every user turn records `(msg_index, checkpoint_index)`
+    in `TURN_MARKS`; `/rewind [n]` (or a picker) truncates history AND reverts the file edits
+    made after that point (`rewind_to`). Marks reset on `/new`·`/clear`·`/logout`·resume.
+  - **`/context`** — Claude-Code-style window breakdown (`context_report`): system+project,
+    conversation, to-dos, % of `CONTEXT_TOKENS`, and the auto-compaction threshold.
 - **Apply-your-edit backstop** — fixes "analyzed the cause but never edited the code." A weak/local
   model often *narrates* a patch instead of emitting an `edit_file` call; the agent loop used to treat
   any tool-call-free turn as "done," so nothing reached disk. Now `run_agent`/`_serve_run` track

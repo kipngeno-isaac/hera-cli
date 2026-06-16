@@ -153,7 +153,7 @@ def save_config(updates):
         pass
 
 
-VERSION = "0.8.10"   # bump on every released change; mirrored in cli/VERSION
+VERSION = "0.8.14"   # bump on every released change; mirrored in cli/VERSION
 NAME    = _env("HERA_NAME", default="Hera")
 # No server host is baked into the source (so this repo can be public, revealing
 # neither key nor host). Each user supplies the endpoint + key once — via env
@@ -170,6 +170,27 @@ IMAGE_EXTS   = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
 YOLO    = _truthy(_env("HERA_YOLO", "QWEN_YOLO"))
 MAX_STEPS      = int(_env("HERA_MAX_STEPS", "QWEN_MAX_STEPS", default="25"))
 HIDE_REASONING = _truthy(_env("HERA_HIDE_REASONING", "QWEN_HIDE_REASONING"))
+
+# Output style (Claude-Code-style): shapes how answers are written. Built-ins
+# below; custom styles live in ~/.config/hera/output-styles/<name>.md.
+OUTPUT_STYLE = _cfg("HERA_OUTPUT_STYLE", key="output_style", default="default") or "default"
+_OUTPUT_STYLES = {
+    "default":     "",
+    "concise":     ("Answer as briefly as possible: short, direct, minimal prose. Prefer a one-line "
+                    "answer or a tight list. No preamble, no recap unless asked."),
+    "explanatory": ("Explain your reasoning as you work: briefly note why you chose an approach and "
+                    "call out trade-offs and non-obvious decisions, so the user learns from each step."),
+    "learning":    ("Teach as you go: explain concepts the user may not know, and occasionally leave a "
+                    "small, clearly-marked 'TODO(you):' for the user to implement, then review it."),
+}
+
+# Thinking budget: off | normal | hard. Maps to the model's enable_thinking
+# chat-template kwarg (and a deeper-reasoning nudge for 'hard').
+THINK_LEVEL = (_cfg("HERA_THINK", key="think", default="normal") or "normal").lower()
+
+# Optional status line: a command whose stdout is shown above the prompt each
+# turn (session JSON on stdin), like Claude Code's statusLine.
+STATUSLINE_CMD = _cfg("HERA_STATUSLINE", key="statusline", default="")
 
 MAX_TOOL_OUTPUT = 12000    # chars; tool results longer than this are truncated
 MAX_READ_BYTES  = 256_000  # cap read_file size
@@ -208,9 +229,12 @@ PRICE_OUT = float(_cfg("HERA_PRICE_OUT", key="price_out", default="0") or 0)
 CONTEXT_TOKENS  = int(_cfg("HERA_CONTEXT_TOKENS", key="context_tokens", default="32000") or 0)
 AUTO_COMPACT_AT = float(_cfg("HERA_AUTO_COMPACT_AT", key="auto_compact_at", default="0.8") or 0)
 
-# User hooks: config["hooks"] = {"PreToolUse":[{"matcher":"run_bash","command":"..."}],
-# "PostToolUse":[...], "Stop":[...]}. A PreToolUse hook exiting non-zero blocks the tool.
+# User hooks: config["hooks"] = {"PreToolUse":[{"matcher":"run_bash","command":"..."}], …}.
+# Events: PreToolUse, PostToolUse, Stop, UserPromptSubmit, SessionStart, SessionEnd,
+# PreCompact, SubagentStop, Notification. A PreToolUse/UserPromptSubmit hook exiting
+# non-zero blocks; UserPromptSubmit/SessionStart stdout is injected as extra context.
 HOOKS = _FILE_CFG.get("hooks") if isinstance(_FILE_CFG.get("hooks"), dict) else {}
+_HOOK_CONTEXT = ""   # stdout from the last UserPromptSubmit/SessionStart hooks
 
 # Fine-grained permissions: config["permissions"] = {"allow":[...],"ask":[...],"deny":[...]}.
 # Each entry is "tool" or "tool(<glob>)" — e.g. "run_bash(git *)", "edit_file(src/**)".
@@ -227,7 +251,7 @@ PLAN_MODE = _truthy(_env("HERA_PLAN"))
 # Set with /auto (or HERA_AUTO_MODE / a {"type":"auto"} serve message); stop any
 # time with /auto off (→ read). Saved under config["auto_modes"][<project path>].
 _AUTO_LEVELS = ("read", "edit", "all")
-_EDIT_TOOLS = {"write_file", "edit_file"}
+_EDIT_TOOLS = {"write_file", "edit_file", "multi_edit", "notebook_edit"}
 
 
 def _project_key():
@@ -747,6 +771,15 @@ def tool_read_file(path, offset=None, limit=None):
     p = _resolve(path)
     if not os.path.isfile(p):
         return f"[error] no such file: {p}"
+    low = p.lower()
+    if low.endswith(".ipynb"):
+        return _render_notebook(p)
+    if low.endswith(".pdf"):
+        text = _read_pdf(p)
+        if text is None:
+            return ("[error] couldn't extract PDF text — install poppler "
+                    "(`pdftotext`) or the `pypdf` package, then retry.")
+        return text[:MAX_READ_BYTES]
     if os.path.getsize(p) > MAX_READ_BYTES:
         return f"[error] file too large (> {MAX_READ_BYTES} bytes); read a slice with run_bash sed/head"
     with open(p, "r", encoding="utf-8", errors="replace") as f:
@@ -972,6 +1005,137 @@ def tool_edit_file(path, old_string, new_string, replace_all=False):
     return f"Edited {p} ({count} replacement{'s' if count != 1 else ''})"
 
 
+def tool_multi_edit(path, edits):
+    """Apply several old/new replacements to one file atomically (all-or-nothing).
+
+    `edits` is a list of {old_string, new_string, replace_all?}. Each is applied
+    in order to the running text; if any fails (not found / not unique) nothing is
+    written and the failing edit is reported. Mirrors Claude Code's MultiEdit."""
+    p = _resolve(path)
+    if not os.path.isfile(p):
+        return f"[error] no such file: {p}"
+    if not isinstance(edits, list) or not edits:
+        return "[error] edits must be a non-empty list of {old_string, new_string}"
+    with open(p, "r", encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    applied = 0
+    for i, e in enumerate(edits):
+        if not isinstance(e, dict):
+            return f"[error] edit #{i + 1} is not an object"
+        old_s = e.get("old_string", "")
+        new_s = e.get("new_string", "")
+        replace_all = bool(e.get("replace_all", False))
+        if old_s == "":
+            return f"[error] edit #{i + 1}: old_string is empty"
+        count = text.count(old_s)
+        if count == 0:
+            return f"[error] edit #{i + 1}: old_string not found (no change written)"
+        if count > 1 and not replace_all:
+            return (f"[error] edit #{i + 1}: old_string not unique ({count} matches). "
+                    f"Add context or set replace_all=true (no change written).")
+        text = text.replace(old_s, new_s) if replace_all else text.replace(old_s, new_s, 1)
+        applied += count if replace_all else 1
+    with open(p, "w", encoding="utf-8") as f:
+        f.write(text)
+    return f"Edited {p} ({len(edits)} edits, {applied} replacement{'s' if applied != 1 else ''})"
+
+
+def _read_pdf(p):
+    """Extract text from a PDF: prefer `pdftotext` (poppler), fall back to a
+    pure-Python pypdf/PyPDF2 if importable. Returns text or None."""
+    if shutil.which("pdftotext"):
+        proc = subprocess.run(["pdftotext", "-layout", p, "-"],
+                              capture_output=True, text=True)
+        if proc.returncode == 0 and (proc.stdout or "").strip():
+            return proc.stdout
+    for mod in ("pypdf", "PyPDF2"):
+        try:
+            m = __import__(mod)
+        except ImportError:
+            continue
+        try:
+            reader = m.PdfReader(p)
+            return "\n".join((pg.extract_text() or "") for pg in reader.pages)
+        except Exception:  # noqa: BLE001 — try the next backend
+            continue
+    return None
+
+
+def _render_notebook(p):
+    """Render a .ipynb as readable text: each cell's index, type, source, and a
+    truncated view of its outputs."""
+    try:
+        with open(p, encoding="utf-8") as f:
+            nb = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        return f"[error] cannot read notebook: {exc}"
+    out = []
+    for i, cell in enumerate(nb.get("cells", [])):
+        ctype = cell.get("cell_type", "?")
+        src = "".join(cell.get("source", []))
+        out.append(f"=== cell [{i}] ({ctype}) ===")
+        out.append(src or "(empty)")
+        for o in (cell.get("outputs") or []):
+            ot = o.get("output_type")
+            if ot == "stream":
+                out.append("  --- stream ---\n" + "".join(o.get("text", []))[:1000])
+            elif ot in ("execute_result", "display_data"):
+                txt = "".join((o.get("data") or {}).get("text/plain", []))
+                if txt:
+                    out.append("  --- output ---\n" + txt[:1000])
+            elif ot == "error":
+                out.append("  --- error ---\n" + "\n".join(o.get("traceback", []))[:1000])
+    return "\n".join(out) if out else "(empty notebook)"
+
+
+def tool_notebook_edit(path, cell_index=None, new_source="", cell_type=None,
+                       edit_mode="replace"):
+    """Edit a Jupyter notebook cell. edit_mode: replace | insert | delete.
+    Mirrors Claude Code's NotebookEdit."""
+    p = _resolve(path)
+    if not os.path.isfile(p):
+        return f"[error] no such file: {p}"
+    try:
+        with open(p, encoding="utf-8") as f:
+            nb = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        return f"[error] cannot parse notebook: {exc}"
+    cells = nb.setdefault("cells", [])
+    n = len(cells)
+    src_lines = new_source.splitlines(keepends=True) or ([new_source] if new_source else [])
+
+    def _mk(ctype):
+        c = {"cell_type": ctype, "metadata": {}, "source": src_lines}
+        if ctype == "code":
+            c["outputs"] = []
+            c["execution_count"] = None
+        return c
+
+    if edit_mode == "delete":
+        if not isinstance(cell_index, int) or not (0 <= cell_index < n):
+            return f"[error] delete needs a valid cell_index 0..{n - 1}"
+        cells.pop(cell_index)
+        msg = f"deleted cell [{cell_index}]"
+    elif edit_mode == "insert":
+        idx = n if not isinstance(cell_index, int) else max(0, min(cell_index, n))
+        cells.insert(idx, _mk(cell_type or "code"))
+        msg = f"inserted {cell_type or 'code'} cell at [{idx}]"
+    else:  # replace
+        if not isinstance(cell_index, int) or not (0 <= cell_index < n):
+            return f"[error] replace needs a valid cell_index 0..{n - 1}"
+        cell = cells[cell_index]
+        cell["source"] = src_lines
+        if cell_type:
+            cell["cell_type"] = cell_type
+        if cell.get("cell_type") == "code":
+            cell["outputs"] = []  # stale outputs no longer match the new source
+        msg = f"replaced cell [{cell_index}]"
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(nb, f, indent=1, ensure_ascii=False)
+        f.write("\n")
+    return f"Edited {p} ({msg})"
+
+
 def _missing_program(command, stderr, returncode):
     """Detect a 'command not found' failure and return the missing binary name."""
     if returncode != 127:
@@ -1172,11 +1336,13 @@ TOOLS = {
     "symbols":    tool_symbols,
     "write_file": tool_write_file,
     "edit_file":  tool_edit_file,
+    "multi_edit": tool_multi_edit,
+    "notebook_edit": tool_notebook_edit,
     "run_bash":   tool_run_bash,
 }
 
 # Tools that change the world → require approval (unless YOLO).
-SIDE_EFFECTS = {"write_file", "edit_file", "run_bash"}
+SIDE_EFFECTS = {"write_file", "edit_file", "multi_edit", "notebook_edit", "run_bash"}
 
 TOOL_SCHEMAS = [
     {"type": "function", "function": {
@@ -1244,6 +1410,36 @@ TOOL_SCHEMAS = [
             "new_string":  {"type": "string", "description": "Replacement text"},
             "replace_all": {"type": "boolean", "description": "Replace all occurrences (default false)"},
         }, "required": ["path", "old_string", "new_string"]},
+    }},
+    {"type": "function", "function": {
+        "name": "multi_edit",
+        "description": ("Apply several exact-string replacements to ONE file atomically "
+                        "(all-or-nothing). Use this instead of multiple edit_file calls when "
+                        "changing several places in the same file."),
+        "parameters": {"type": "object", "properties": {
+            "path":  {"type": "string"},
+            "edits": {"type": "array", "description": "Edits applied in order",
+                      "items": {"type": "object", "properties": {
+                          "old_string":  {"type": "string"},
+                          "new_string":  {"type": "string"},
+                          "replace_all": {"type": "boolean"},
+                      }, "required": ["old_string", "new_string"]}},
+        }, "required": ["path", "edits"]},
+    }},
+    {"type": "function", "function": {
+        "name": "notebook_edit",
+        "description": ("Edit a Jupyter .ipynb cell. edit_mode 'replace' overwrites the cell at "
+                        "cell_index, 'insert' adds a new cell at cell_index, 'delete' removes it. "
+                        "Read the notebook first with read_file to see cell indices."),
+        "parameters": {"type": "object", "properties": {
+            "path":       {"type": "string"},
+            "cell_index": {"type": "integer", "description": "0-based cell index"},
+            "new_source": {"type": "string", "description": "New cell source (replace/insert)"},
+            "cell_type":  {"type": "string", "enum": ["code", "markdown"],
+                           "description": "Cell type for insert/replace (default code)"},
+            "edit_mode":  {"type": "string", "enum": ["replace", "insert", "delete"],
+                           "description": "Default replace"},
+        }, "required": ["path"]},
     }},
     {"type": "function", "function": {
         "name": "run_bash",
@@ -1320,6 +1516,10 @@ def _narrate(name, args):
         return f"Writing {p}"
     if name == "edit_file":
         return f"Editing {p}"
+    if name == "multi_edit":
+        return f"Editing {p} ({len(args.get('edits') or [])} edits)"
+    if name == "notebook_edit":
+        return f"{args.get('edit_mode', 'replace').title()} notebook cell in {p}"
     if name == "list_dir":
         return f"Listing {args.get('path', '.')}"
     if name == "glob":
@@ -1372,6 +1572,28 @@ def _preview_call(name, args):
                      else before.replace(old_s, new_s, 1))
             return f"edit {path}\n{_full_diff(before, after)}"
         return f"edit {path}\n{_diff_preview(old_s, new_s)}"
+    if name == "multi_edit":
+        path = args.get("path", "?")
+        edits = args.get("edits") or []
+        existed, before = _snapshot(path)
+        # Apply the edits to a copy so we can show one combined diff up front.
+        if existed and before is not None:
+            after, ok = before, True
+            for e in edits:
+                old_s = e.get("old_string", "")
+                if old_s and old_s in after:
+                    after = (after.replace(old_s, e.get("new_string", ""))
+                             if e.get("replace_all") else after.replace(old_s, e.get("new_string", ""), 1))
+                else:
+                    ok = False
+                    break
+            if ok:
+                return f"multi-edit {path} ({len(edits)} edits)\n{_full_diff(before, after)}"
+        return f"multi-edit {path} ({len(edits)} edits)"
+    if name == "notebook_edit":
+        mode = args.get("edit_mode", "replace")
+        return (f"{mode} cell {args.get('cell_index', '?')} in {args.get('path', '?')}\n"
+                f"{_diff_preview('', args.get('new_source', ''))}")
     return f"{name}({json.dumps(args)})"
 
 
@@ -1427,6 +1649,7 @@ def approve(name, args):
         print(f"\n{YELL}{BOLD}⚠ approval needed{R} {DIM}(run_bash{', matches deny-pattern' if denied else ''}){R}")
         print(f"  $ {cmd}")
         print(f"  {DIM}sandbox: {sandbox_label()}{R}")
+        _run_hooks("Notification", name=name, args=args)
         try:
             ans = input(f"{BOLD}  [y]es once / [a]lways this command / "
                         f"[p]rogram (all '{cmd.split()[0] if cmd.split() else '?'}') / "
@@ -1451,6 +1674,7 @@ def approve(name, args):
     print(f"\n{YELL}{BOLD}⚠ approval needed{R} {DIM}({name}){R}")
     for ln in _preview_call(name, args).split("\n"):
         print(f"  {ln}")
+    _run_hooks("Notification", name=name, args=args)
     try:
         ans = input(f"{BOLD}  run this? [y]es / [a]lways / [t]ype feedback / [n]o:{R} ").strip().lower()
     except (EOFError, KeyboardInterrupt):
@@ -1526,6 +1750,88 @@ def _is_context_overflow(exc):
                                    or "too long" in body or "available context" in body))
 
 
+def _scan_json_objects(s):
+    """Yield (start, end, parsed_dict) for every balanced top-level {...} in s.
+
+    String- and escape-aware brace matching, so nested objects and braces inside
+    quoted strings don't fool it (a plain regex would). Used to recover tool
+    calls a server left embedded in text content."""
+    out, i, n = [], 0, len(s)
+    while i < n:
+        if s[i] != "{":
+            i += 1
+            continue
+        depth, j, instr, esc = 0, i, False, False
+        while j < n:
+            c = s[j]
+            if instr:
+                if esc:
+                    esc = False
+                elif c == "\\":
+                    esc = True
+                elif c == '"':
+                    instr = False
+            elif c == '"':
+                instr = True
+            elif c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    blob = s[i:j + 1]
+                    try:
+                        out.append((i, j + 1, json.loads(blob)))
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                    break
+            j += 1
+        i = j + 1
+    return out
+
+
+def _extract_text_tool_calls(content):
+    """Recover tool calls a server leaked into text instead of returning as
+    structured `tool_calls`.
+
+    Some OpenAI-compatible servers (notably llama.cpp without the right tool
+    template) let a model's tool call fall through as plain content — e.g. a
+    Hermes/Qwen `<tool_call>{…}</tool_call>` block or a fenced JSON object. We
+    parse those back out so the agent still acts on them instead of treating the
+    turn as a final answer. Only objects naming a *registered* tool are accepted,
+    so an illustrative JSON snippet in prose isn't mistaken for a call.
+
+    Returns (cleaned_content, calls) where calls is a list of
+    {id, name, arguments(str)} mirroring the streamed shape.
+    """
+    if not content or "{" not in content:
+        return content, []
+    calls, cleaned = [], content
+    for start, end, obj in _scan_json_objects(content):
+        if not isinstance(obj, dict):
+            continue
+        fn = obj.get("function") if isinstance(obj.get("function"), dict) else None
+        name = obj.get("name") or obj.get("tool") or (fn.get("name") if fn else None)
+        args = obj.get("arguments")
+        if args is None and fn:
+            args = fn.get("arguments")
+        if args is None:
+            args = obj.get("parameters")
+        if args is None:
+            args = obj.get("args")
+        # Accept only real tool calls: a known tool name AND an arguments-shaped
+        # field (so {"name": "x"} mentioned in prose isn't hijacked).
+        if not name or name not in TOOLS or args is None:
+            continue
+        args_str = args if isinstance(args, str) else json.dumps(args)
+        calls.append({"id": f"txt-{len(calls)}-{abs(hash(content[start:end])) % 100000}",
+                      "name": name, "arguments": args_str})
+        cleaned = cleaned.replace(content[start:end], "", 1)
+    if calls:  # tidy any wrapper tags / empty fences left behind
+        cleaned = re.sub(r"</?tool_call>", "", cleaned)
+        cleaned = re.sub(r"```(?:json|tool_call|tool_code|tool)?\s*```", "", cleaned)
+    return cleaned.strip(), calls
+
+
 def stream_turn(messages, spinner, tools=None):
     """One model turn. Streams reasoning + content live; assembles tool calls.
 
@@ -1557,6 +1863,7 @@ def stream_turn(messages, spinner, tools=None):
                     "tool_choice": "auto",
                     "stream": True,
                     "stream_options": {"include_usage": True},
+                    **_think_payload(),
                 },
                 headers={
                     "Authorization": f"Bearer {API_KEY}",
@@ -1689,10 +1996,21 @@ def stream_turn(messages, spinner, tools=None):
     if line_buf:  # flush any trailing partial line
         print(render_md_line(line_buf, md_state), flush=True)
 
+    final_content = "".join(content)
+    structured = [tool_calls[i] for i in sorted(tool_calls)]
+    # Fallback: if the server returned no structured tool calls but left them in
+    # the text (a misconfigured tool template), recover them so the agent acts.
+    if not structured:
+        final_content, recovered = _extract_text_tool_calls(final_content)
+        if recovered:
+            structured = recovered
+            print(f"{DIM}  ↳ recovered {len(recovered)} tool call(s) from text "
+                  f"(server didn't structure them){R}", flush=True)
+
     return {
-        "content": "".join(content),
+        "content": final_content,
         "finish_reason": finish_reason,
-        "tool_calls": [tool_calls[i] for i in sorted(tool_calls)],
+        "tool_calls": structured,
         "usage": usage,
     }
 
@@ -1751,6 +2069,95 @@ def undo_last():
         return f"deleted {p} (it was created by {cp['label']})"
     except OSError as exc:
         return f"[error] undo failed: {exc}"
+
+
+# ── Rewind: restore conversation + code to an earlier turn (Claude-Code style) ─
+# Each user turn records where the message history and the edit-checkpoint stack
+# stood when it began, so /rewind can roll BOTH back to that point at once.
+TURN_MARKS = []  # [{"msg": int, "ckpt": int, "text": str}]
+
+
+def mark_turn(messages, text):
+    TURN_MARKS.append({"msg": len(messages), "ckpt": len(CHECKPOINTS),
+                       "text": (_text_of(text) or "").strip()})
+
+
+def reset_turn_marks():
+    TURN_MARKS.clear()
+
+
+def rewind_to(messages, mark):
+    """Roll the conversation and the files back to the state at `mark`. Returns
+    the number of file edits reverted."""
+    reverted = 0
+    while len(CHECKPOINTS) > mark["ckpt"]:
+        undo_last()
+        reverted += 1
+    del messages[mark["msg"]:]
+    while TURN_MARKS and TURN_MARKS[-1]["msg"] >= mark["msg"]:
+        TURN_MARKS.pop()
+    return reverted
+
+
+def rewind_picker(messages, n=None):
+    """Interactive /rewind: pick an earlier user turn to restore to. With `n`,
+    jump straight back n turns."""
+    if not TURN_MARKS:
+        print(f"\n{DIM}nothing to rewind to yet.{R}\n")
+        return
+    if n is not None:
+        idx = max(0, len(TURN_MARKS) - n)
+        mark = TURN_MARKS[idx]
+        cnt = rewind_to(messages, mark)
+        print(f"\n{DIM}rewound {n} turn(s) — {cnt} file edit(s) reverted.{R}\n")
+        save_session(messages)
+        return
+    shown = TURN_MARKS[-9:]
+    base = len(TURN_MARKS) - len(shown)
+    print(f"\n{DIM}rewind to before which message? (restores conversation AND files){R}")
+    for i, m in enumerate(shown, 1):
+        preview = (m["text"][:70] or "(empty)").replace("\n", " ")
+        print(f"  {CYAN}{i}{R} {DIM}{preview}{R}")
+    try:
+        sel = input(f"{BOLD}  number (Enter to cancel): {R}").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+    if not sel.isdigit() or not (1 <= int(sel) <= len(shown)):
+        print(f"{DIM}cancelled.{R}\n")
+        return
+    mark = shown[int(sel) - 1]
+    cnt = rewind_to(messages, mark)
+    print(f"\n{DIM}rewound to before {(mark['text'][:50] or '(empty)')!r} — "
+          f"{cnt} file edit(s) reverted, conversation truncated.{R}\n")
+    save_session(messages)
+
+
+def context_report(messages):
+    """A Claude-Code-style /context breakdown: where the window is going."""
+    win = CONTEXT_TOKENS or 32000
+    sys_tok = len(_text_of(messages[0].get("content"))) // 4 if messages else 0
+    convo_tok = _estimate_tokens(messages[1:]) if len(messages) > 1 else 0
+    todo_tok = len(json.dumps(TODOS)) // 4 if TODOS else 0
+    est = sys_tok + convo_tok + todo_tok
+    # Prefer the server's real last prompt size when we have it.
+    real = _LAST_PROMPT_TOKENS or est
+    pct = min(100, round(100 * real / win)) if win else 0
+    filled = int(pct / 5)
+    bar = "█" * filled + "░" * (20 - filled)
+    n_user = sum(1 for m in messages if m.get("role") == "user")
+    n_tool = sum(1 for m in messages if m.get("role") == "tool")
+    lines = [
+        f"\n{BOLD}Context window{R}  {DIM}(≈ {real:,} / {win:,} tokens){R}",
+        f"  {bar} {pct}%",
+        f"{DIM}  system prompt + project context : ~{sys_tok:,} tok",
+        f"  conversation ({len(messages)} msgs: {n_user} user, {n_tool} tool) : ~{convo_tok:,} tok",
+        f"  to-dos : ~{todo_tok:,} tok",
+        f"  auto-compaction triggers at {int((AUTO_COMPACT_AT or 0) * 100)}% of the window{R}",
+    ]
+    if pct >= int((AUTO_COMPACT_AT or 0.8) * 100):
+        lines.append(f"{YELL}  ⚠ near the limit — /compact to summarize and free space.{R}")
+    print("\n".join(lines) + "\n")
 
 
 # ── Agent loop ────────────────────────────────────────────────────────────────
@@ -2000,7 +2407,7 @@ def _exec_call(c, indent=""):
         return f"[denied] {verdict}"
 
     # Snapshot file state before a mutating edit so /undo can revert it.
-    snap = _snapshot(args.get("path", "")) if name in ("write_file", "edit_file") else None
+    snap = _snapshot(args.get("path", "")) if name in _EDIT_TOOLS else None
     # Show a live whimsy spinner while the tool runs in the "background" — fast
     # tools (read_file, list_dir) finish before it's noticeable; slow ones
     # (run_bash, web_search, web_fetch, task) get visible activity. Skip it for
@@ -2084,6 +2491,7 @@ def run_subagent(description, agent=None):
             out = _exec_call(c, indent="    ")
             msgs.append({"role": "tool", "tool_call_id": c["id"], "content": out})
     print(f"  {BLUE}⤷ {label} done{R}")
+    _run_hooks("SubagentStop", name=label, output=final)
     return final or "(sub-agent produced no result)"
 
 
@@ -2351,9 +2759,28 @@ TOOL_SCHEMAS.append({"type": "function", "function": {
 
 
 # ----- user hooks -------------------------------------------------------------
-def _run_hooks(event, name=None, args=None, output=None):
-    """Run configured hooks for an event. Returns a denial string if a PreToolUse
-    hook blocks the tool, else None. Hook failures never crash a turn."""
+def _inject_context(content, ctx):
+    """Append hook-provided context to a user message (string or multimodal list)."""
+    block = f"\n\n<context source=\"hook\">\n{ctx}\n</context>"
+    if isinstance(content, list):
+        return content + [{"type": "text", "text": block}]
+    return (content or "") + block
+
+
+_BLOCKING_HOOKS = ("PreToolUse", "UserPromptSubmit")
+_CONTEXT_HOOKS = ("UserPromptSubmit", "SessionStart")
+
+
+def _run_hooks(event, name=None, args=None, output=None, prompt=None):
+    """Run configured hooks for an event.
+
+    Returns a block-reason string if a blocking hook (PreToolUse /
+    UserPromptSubmit) exits non-zero, else None. For UserPromptSubmit and
+    SessionStart, any hook stdout is stashed in the module global `_HOOK_CONTEXT`
+    so the caller can inject it as extra context. Hook failures never crash a turn.
+    """
+    global _HOOK_CONTEXT
+    ctx = []
     for spec in (HOOKS.get(event) or []):
         if not isinstance(spec, dict) or not spec.get("command"):
             continue
@@ -2365,16 +2792,22 @@ def _run_hooks(event, name=None, args=None, output=None):
             env["HERA_TOOL_NAME"] = name
         if args is not None:
             env["HERA_TOOL_ARGS"] = json.dumps(args)[:8000]
+        if prompt is not None:
+            env["HERA_USER_PROMPT"] = prompt[:8000]
         payload = json.dumps({"event": event, "tool": name, "args": args,
-                              "output": (output or "")[:4000]})
+                              "prompt": prompt, "output": (output or "")[:4000]})
         try:
             r = subprocess.run(spec["command"], shell=True, input=payload, text=True,
                                capture_output=True, timeout=30, env=env, cwd=os.getcwd())
         except Exception:  # noqa: BLE001 — a broken hook must not break the agent
             continue
-        if event == "PreToolUse" and r.returncode != 0:
-            reason = (r.stdout or r.stderr or "").strip() or "blocked by PreToolUse hook"
+        if event in _BLOCKING_HOOKS and r.returncode != 0:
+            reason = (r.stdout or r.stderr or "").strip() or f"blocked by {event} hook"
             return f"hook blocked: {reason[:200]}"
+        if event in _CONTEXT_HOOKS and (r.stdout or "").strip():
+            ctx.append(r.stdout.strip())
+    if event in _CONTEXT_HOOKS:
+        _HOOK_CONTEXT = "\n".join(ctx)
     return None
 
 
@@ -2723,6 +3156,7 @@ def _switch_to(messages, s):
     CURRENT_SESSION["title"] = s.get("title") or _first_user(s.get("messages") or [])
     SESSION.update(s.get("tokens", {}))
     _always_ok.clear()
+    reset_turn_marks()  # marks belong to the previous conversation
     nturns = sum(1 for m in messages if m.get("role") == "user")
     where = s.get("cwd", "")
     print(f"\n{GREEN}resumed:{R} {_session_label(s)} {DIM}({nturns} message(s), "
@@ -3070,20 +3504,158 @@ def close_extensions():
         c.close()
 
 
-# ── Project context (Claude-Code-style) ───────────────────────────────────────
+# ── Memory / project context (Claude-Code-style hierarchy) ────────────────────
 CONTEXT_FILES = ("HERA.md", "AGENTS.md", "AGENT.md")
+MEMORY_MAX_PER_FILE = 16000   # cap one source so a giant AGENT.md can't dominate
+MEMORY_MAX_TOTAL    = 32000   # overall cap across all memory sources
+
+
+def _memory_sources():
+    """Ordered (scope, path) memory files, least- to most-specific:
+    enterprise → user (~/.config/hera) → project tree (filesystem root down to
+    cwd). Mirrors Claude Code's CLAUDE.md hierarchy."""
+    out = []
+    ent = _env("HERA_ENTERPRISE_MEMORY") or "/etc/hera/HERA.md"
+    if os.path.isfile(ent):
+        out.append(("enterprise", ent))
+    user = os.path.join(CONFIG_DIR, "HERA.md")
+    if os.path.isfile(user):
+        out.append(("user", user))
+    # Walk up from cwd collecting the first context file at each level, then add
+    # them root-first so the most-specific (cwd) lands last and wins.
+    chain, d = [], os.getcwd()
+    while True:
+        for fn in CONTEXT_FILES:
+            p = os.path.join(d, fn)
+            if os.path.isfile(p):
+                chain.append(("project", p))
+                break
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    out.extend(reversed(chain))
+    return out
+
+
+def _expand_memory_imports(text, base_dir, seen, depth=0):
+    """Inline `@path` import lines (recursive, cycle- and depth-guarded), like
+    Claude Code's CLAUDE.md @imports. A line that is just `@some/file` is
+    replaced with that file's (also expanded) contents."""
+    if depth > 5:
+        return text
+    out = []
+    for line in text.splitlines():
+        m = re.match(r"^\s*@(\S+)\s*$", line)
+        if m:
+            p = os.path.expanduser(m.group(1))
+            if not os.path.isabs(p):
+                p = os.path.join(base_dir, p)
+            p = os.path.realpath(p)
+            if os.path.isfile(p) and p not in seen:
+                seen.add(p)
+                try:
+                    sub = open(p, encoding="utf-8", errors="replace").read()
+                    out.append(f"<!-- imported: {m.group(1)} -->")
+                    out.append(_expand_memory_imports(sub, os.path.dirname(p), seen, depth + 1))
+                    continue
+                except OSError:
+                    pass
+        out.append(line)
+    return "\n".join(out)
+
+
+def load_memory():
+    """All memory sources as a list of (scope, path, expanded_body)."""
+    seen, parts = set(), []
+    for scope, path in _memory_sources():
+        rp = os.path.realpath(path)
+        if rp in seen:
+            continue
+        seen.add(rp)
+        try:
+            body = open(path, encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        body = _expand_memory_imports(body, os.path.dirname(path), seen)[:MEMORY_MAX_PER_FILE]
+        if body.strip():
+            parts.append((scope, path, body))
+    return parts
+
+
+def add_memory(text, scope="project"):
+    """Append a `- fact` line to project (./HERA.md) or user memory. Powers `#`."""
+    text = text.strip()
+    if not text:
+        return "nothing to remember"
+    path = (os.path.join(CONFIG_DIR, "HERA.md") if scope == "user"
+            else os.path.join(os.getcwd(), "HERA.md"))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fresh = not os.path.exists(path)
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            if fresh:
+                f.write(f"# {'User' if scope == 'user' else 'Project'} memory (Hera)\n\n")
+            f.write(f"- {text}\n")
+    except OSError as exc:
+        return f"[error] could not write memory: {exc}"
+    return f"remembered ({scope}): {path}"
 
 
 def load_project_context():
-    for fn in CONTEXT_FILES:
-        p = os.path.join(os.getcwd(), fn)
-        if os.path.isfile(p):
-            try:
-                with open(p, "r", encoding="utf-8", errors="replace") as f:
-                    return fn, f.read()[:8000]
-            except OSError:
-                pass
-    return None, None
+    """Back-compat shim: (filename, combined_body) of all memory, or (None, None).
+    Kept for the banner/startup code that wants a single label."""
+    parts = load_memory()
+    if not parts:
+        return None, None
+    label = ", ".join(sorted({os.path.basename(p) for _, p, _ in parts}))
+    body = "\n\n".join(b for _, _, b in parts)[:MEMORY_MAX_TOTAL]
+    return label, body
+
+
+def memory_report():
+    """`/memory`: show the loaded memory hierarchy and how to add to it."""
+    parts = load_memory()
+    if not parts:
+        print(f"\n{DIM}no memory yet. Add a fact with {R}{CYAN}# <fact>{R}{DIM} (project) "
+              f"or {R}{CYAN}# user <fact>{R}{DIM} (all projects).{R}\n")
+        return
+    print(f"\n{BOLD}Memory{R} {DIM}(loaded into every prompt; most-specific last){R}")
+    for scope, path, body in parts:
+        print(f"  {CYAN}{scope:10}{R}{DIM}{path}  ({len(body)} chars){R}")
+    print(f"{DIM}  add: {R}{CYAN}# <fact>{R}{DIM} · {R}{CYAN}# user <fact>{R}{DIM} · "
+          f"edit a file directly{R}\n")
+
+
+def _think_payload():
+    """Extra request fields for the active thinking level (off|normal|hard)."""
+    if THINK_LEVEL == "off":
+        return {"chat_template_kwargs": {"enable_thinking": False}}
+    if THINK_LEVEL == "hard":
+        return {"chat_template_kwargs": {"enable_thinking": True}}
+    return {}  # 'normal' → leave the server default
+
+
+def _output_style_text():
+    """Instruction block for the active output style (built-in or custom .md)."""
+    if OUTPUT_STYLE in _OUTPUT_STYLES:
+        return _OUTPUT_STYLES[OUTPUT_STYLE]
+    p = os.path.join(CONFIG_DIR, "output-styles", f"{OUTPUT_STYLE}.md")
+    if os.path.isfile(p):
+        try:
+            return open(p, encoding="utf-8", errors="replace").read()[:4000]
+        except OSError:
+            pass
+    return ""
+
+
+def output_styles_available():
+    """Built-in + custom output style names."""
+    names = list(_OUTPUT_STYLES)
+    d = os.path.join(CONFIG_DIR, "output-styles")
+    if os.path.isdir(d):
+        names += [fn[:-3] for fn in sorted(os.listdir(d)) if fn.endswith(".md")]
+    return names
 
 
 def system_prompt():
@@ -3137,10 +3709,20 @@ def system_prompt():
                  "a command — if it fails with 'command not found' the user is offered the "
                  "install and the command is retried automatically. Either way, don't give up "
                  "because a tool is missing.")
-    fn, body = load_project_context()
-    if body:
-        base += (f"\n\nThe project provides a context file ({fn}). Follow its "
-                 f"instructions and conventions:\n\n{body}")
+    style = _output_style_text()
+    if style:
+        base += f"\n\nOutput style ({OUTPUT_STYLE}): {style}"
+    mem = load_memory()
+    if mem:
+        total = 0
+        base += ("\n\nMemory & project context (follow these instructions and conventions; "
+                 "more-specific scopes override broader ones):")
+        for scope, path, body in mem:
+            if total >= MEMORY_MAX_TOTAL:
+                break
+            body = body[:MEMORY_MAX_TOTAL - total]
+            total += len(body)
+            base += f"\n\n--- {scope} memory ({os.path.basename(path)}) ---\n{body}"
     return base
 
 
@@ -3204,6 +3786,7 @@ def compact_history(messages):
     """Replace the conversation with a model-written summary to free up context."""
     if len(messages) <= 2:
         return "nothing to compact yet"
+    _run_hooks("PreCompact")
     convo = []
     for m in messages[1:]:
         c = _text_of(m.get("content"))
@@ -3329,6 +3912,9 @@ SLASH_COMMANDS = [
     ("/help",      "",          "show this list of commands"),
     ("/skills",    "[id]",      "list shared skills, or show one in detail"),
     ("/undo",      "",          "revert the last file write/edit I made"),
+    ("/rewind",    "[n]",       "restore conversation AND files to an earlier turn"),
+    ("/context",   "",          "show how the context window is being used"),
+    ("/memory",    "",          "show loaded memory files (add with # <fact>)"),
     ("/diff",      "",          "show the working-tree git diff"),
     ("/compact",   "",          "summarize the conversation to free up context"),
     ("/tokens",    "",          "show token usage (and cost, if priced) this session"),
@@ -3341,6 +3927,9 @@ SLASH_COMMANDS = [
     ("/sessions",  "",          "list saved conversations (by their first message)"),
     ("/resume",    "",          "pick a past conversation to resume (by its first message)"),
     ("/reasoning", "",          "toggle streaming of my thinking"),
+    ("/think",     "[level]",   "thinking budget: off / normal / hard"),
+    ("/output-style", "[name]", "answer style: default / concise / explanatory / learning"),
+    ("/statusline", "",         "show the custom status-line command"),
     ("/cwd",       "",          "show the working directory"),
     ("/new",       "",          "save current and start a fresh session"),
     ("/clear",     "",          "same as /new (fresh conversation)"),
@@ -3769,7 +4358,7 @@ def _serve_stream(messages):
                 f"{url}/chat/completions",
                 json={"model": model, "messages": send_messages, "tools": TOOL_SCHEMAS,
                       "tool_choice": "auto", "stream": True,
-                      "stream_options": {"include_usage": True}},
+                      "stream_options": {"include_usage": True}, **_think_payload()},
                 headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
                 stream=True, timeout=600,
             )
@@ -3832,8 +4421,16 @@ def _serve_stream(messages):
                 slot["name"] = fn["name"]
             if fn.get("arguments"):
                 slot["arguments"] += fn["arguments"]
-    return {"content": "".join(content), "finish_reason": finish,
-            "tool_calls": [tool_calls[i] for i in sorted(tool_calls)], "usage": usage}
+    final_content = "".join(content)
+    structured = [tool_calls[i] for i in sorted(tool_calls)]
+    if not structured:  # recover tool calls the server left in the text
+        final_content, recovered = _extract_text_tool_calls(final_content)
+        if recovered:
+            structured = recovered
+            _emit({"type": "info",
+                   "text": f"recovered {len(recovered)} tool call(s) from text"})
+    return {"content": final_content, "finish_reason": finish,
+            "tool_calls": structured, "usage": usage}
 
 
 def _serve_approve(name, args):
@@ -3941,7 +4538,7 @@ def _serve_exec(c):
         out = f"[denied] {verdict}"
         _emit({"type": "tool_end", "name": name, "error": True, "output": out})
         return out
-    snap = _snapshot(args.get("path", "")) if name in ("write_file", "edit_file") else None
+    snap = _snapshot(args.get("path", "")) if name in _EDIT_TOOLS else None
     try:
         out = TOOLS[name](**args)
     except TypeError as exc:
@@ -4378,16 +4975,42 @@ def main():
     print_banner()
     spinner = Spinner()
 
+    # SessionStart hooks may print a status line and inject startup context.
+    _run_hooks("SessionStart")
+    if _HOOK_CONTEXT and messages:
+        messages[0]["content"] += f"\n\n<session-start-context>\n{_HOOK_CONTEXT}\n</session-start-context>"
+
     try:
         _repl(messages, spinner)
     finally:
+        _run_hooks("SessionEnd")
         save_session(messages)
         close_extensions()
+
+
+def _render_statusline():
+    """Run the configured statusline command (session JSON on stdin) and print
+    its stdout above the prompt, like Claude Code's statusLine."""
+    if not STATUSLINE_CMD:
+        return
+    payload = json.dumps({"model": MODEL, "cwd": os.getcwd(),
+                          "session_tokens": SESSION.get("total", 0),
+                          "auto_mode": AUTO_MODE, "plan_mode": PLAN_MODE,
+                          "output_style": OUTPUT_STYLE, "think": THINK_LEVEL})
+    try:
+        r = subprocess.run(STATUSLINE_CMD, shell=True, input=payload, text=True,
+                           capture_output=True, timeout=5, cwd=os.getcwd())
+        line = (r.stdout or "").strip()
+        if line:
+            print(f"{DIM}{line}{R}")
+    except Exception:  # noqa: BLE001 — a broken statusline must not break the REPL
+        pass
 
 
 def _repl(messages, spinner):
     global HIDE_REASONING
     while True:
+        _render_statusline()
         try:
             user_input = read_line(f"{ACCENT}{BOLD}❯{R} ").strip()
         except (EOFError, KeyboardInterrupt):
@@ -4395,6 +5018,16 @@ def _repl(messages, spinner):
             break
 
         if not user_input:
+            continue
+
+        # `# fact` quick-add to memory (Claude-Code style). `# user fact` → user
+        # scope (all projects); otherwise project scope (./HERA.md).
+        if user_input.startswith("#"):
+            body = user_input[1:].strip()
+            scope = "project"
+            if body.lower().startswith("user "):
+                scope, body = "user", body[5:].strip()
+            print(f"\n{DIM}{add_memory(body, scope)}{R}\n")
             continue
 
         cmd = user_input.lower()
@@ -4405,6 +5038,7 @@ def _repl(messages, spinner):
             save_session(messages)
             messages[:] = _start_new_session()
             _always_ok.clear()
+            reset_turn_marks()
             print(f"\n{DIM}Started a fresh session ({CURRENT_SESSION['id']}).{R}\n")
             continue
         if cmd == "/logout":
@@ -4417,6 +5051,7 @@ def _repl(messages, spinner):
             resolve_identity()
             messages[:] = _start_new_session()     # don't show the previous user's context
             _always_ok.clear()
+            reset_turn_marks()
             print(f"{DIM}Fresh session started for the new account.{R}\n")
             continue
         if cmd == "/sessions":
@@ -4435,6 +5070,16 @@ def _repl(messages, spinner):
             continue
         if cmd == "/undo":
             print(f"\n{DIM}{undo_last()}{R}\n")
+            continue
+        if cmd == "/rewind" or cmd.startswith("/rewind "):
+            arg = user_input[7:].strip()
+            rewind_picker(messages, int(arg) if arg.isdigit() else None)
+            continue
+        if cmd == "/context":
+            context_report(messages)
+            continue
+        if cmd == "/memory":
+            memory_report()
             continue
         if cmd == "/diff":
             inrepo = subprocess.run("git rev-parse --is-inside-work-tree",
@@ -4496,6 +5141,38 @@ def _repl(messages, spinner):
             state = "hidden" if HIDE_REASONING else "visible"
             print(f"\n{DIM}reasoning is now {state}.{R}\n")
             continue
+        if cmd == "/think" or cmd.startswith("/think "):
+            arg = user_input[6:].strip().lower()
+            if arg in ("off", "normal", "hard"):
+                globals()["THINK_LEVEL"] = arg
+                save_config({"think": arg})
+                blurb = {"off": "no model thinking (fastest)",
+                         "normal": "default thinking",
+                         "hard": "deeper thinking enabled"}[arg]
+                print(f"\n{DIM}thinking → {BOLD}{arg}{R}{DIM} ({blurb}).{R}\n")
+            else:
+                print(f"\n{DIM}thinking is {BOLD}{THINK_LEVEL}{R}{DIM}. "
+                      f"Use {R}{CYAN}/think off|normal|hard{R}{DIM}.{R}\n")
+            continue
+        if cmd == "/output-style" or cmd.startswith("/output-style "):
+            arg = user_input[14:].strip()
+            avail = output_styles_available()
+            if arg in avail:
+                globals()["OUTPUT_STYLE"] = arg
+                save_config({"output_style": arg})
+                print(f"\n{DIM}output style → {BOLD}{arg}{R}{DIM}.{R}\n")
+            elif not arg:
+                print(f"\n{DIM}output style is {BOLD}{OUTPUT_STYLE}{R}{DIM}. available: "
+                      f"{', '.join(avail)}.\n  add custom ones in "
+                      f"{os.path.join(CONFIG_DIR, 'output-styles')}/<name>.md{R}\n")
+            else:
+                print(f"\n{DIM}unknown style {arg!r}. available: {', '.join(avail)}.{R}\n")
+            continue
+        if cmd == "/statusline":
+            print(f"\n{DIM}statusline: {STATUSLINE_CMD or '(none)'}\n"
+                  f"  set with HERA_STATUSLINE='<cmd>' or config \"statusline\" "
+                  f"(session JSON on stdin → stdout shown above the prompt).{R}\n")
+            continue
         if cmd == "/plan":
             globals()["PLAN_MODE"] = not PLAN_MODE
             if PLAN_MODE:
@@ -4540,6 +5217,7 @@ def _repl(messages, spinner):
             cmd_args = user_input[len(first):].strip()
             prompt_text = body.replace("$ARGUMENTS", cmd_args).strip()
             mark = len(messages)
+            mark_turn(messages, user_input)
             messages.append({"role": "user", "content": prompt_text})
             try:
                 ok = run_agent(messages, spinner)
@@ -4547,6 +5225,8 @@ def _repl(messages, spinner):
                 spinner.stop(); print(f"\n{DIM}(interrupted){R}\n"); ok = True
             if not ok:
                 del messages[mark:]
+                if TURN_MARKS:
+                    TURN_MARKS.pop()
             save_session(messages)
             continue
 
@@ -4557,10 +5237,18 @@ def _repl(messages, spinner):
             print_slash_menu(user_input)
             continue
 
+        # UserPromptSubmit hooks: may veto the prompt or inject extra context.
+        blocked = _run_hooks("UserPromptSubmit", prompt=user_input)
+        if blocked:
+            print(f"\n{YELL}{blocked}{R}\n")
+            continue
         content, attached = expand_mentions(user_input)
         if attached:
             print(f"{DIM}  ↳ attached: {', '.join(attached)}{R}")
+        if _HOOK_CONTEXT:  # hook stdout becomes additional context for this turn
+            content = _inject_context(content, _HOOK_CONTEXT)
         mark = len(messages)  # remember where this turn starts
+        mark_turn(messages, user_input)  # rewind checkpoint (conversation + files)
         messages.append({"role": "user", "content": content})
         try:
             ok = run_agent(messages, spinner)
@@ -4573,6 +5261,8 @@ def _repl(messages, spinner):
             # assistant/tool msgs), so a transport error can't leave the
             # history in a state that breaks every subsequent request.
             del messages[mark:]
+            if TURN_MARKS:
+                TURN_MARKS.pop()
         save_session(messages)  # autosave after every turn
 
 
