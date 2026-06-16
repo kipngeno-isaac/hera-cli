@@ -153,7 +153,7 @@ def save_config(updates):
         pass
 
 
-VERSION = "0.8.9"   # bump on every released change; mirrored in cli/VERSION
+VERSION = "0.8.10"   # bump on every released change; mirrored in cli/VERSION
 NAME    = _env("HERA_NAME", default="Hera")
 # No server host is baked into the source (so this repo can be public, revealing
 # neither key nor host). Each user supplies the endpoint + key once — via env
@@ -371,6 +371,29 @@ _RUN_VERIFY_RE = re.compile(
 
 def _wants_run_verification(text):
     return bool(_RUN_VERIFY_RE.search(text or ""))
+
+
+# Phrases that mean "change the code" — so when the model ends a turn having only
+# *described* a fix (a weak/local model often narrates a patch instead of emitting
+# an edit_file call), Hera nudges it once to actually apply the edit. Mirrors the
+# verify-your-work loop, but for the edit step that precedes it.
+_CHANGE_RE = re.compile(
+    r"\b("
+    r"fix|edit|change|modif(y|ies|ied)|update|patch|implement|refactor|rewrite|"
+    r"add|create|append|insert|remove|delete|replace|rename|correct|resolve|"
+    r"repair|adjust|tweak|convert|migrate|wire up|hook up|make (it|this|them)"
+    r")\b", re.IGNORECASE)
+
+
+def _wants_code_change(text):
+    return bool(_CHANGE_RE.search(text or ""))
+
+
+_EDIT_NUDGE = (
+    "[auto-apply] Your turn ended without any file change, but the request asked for one. "
+    "If you proposed or described a fix, you must actually apply it — call edit_file (exact "
+    "old_string/new_string) or write_file now. Describing a patch in prose changes nothing on "
+    "disk. If the task genuinely needs no edit, say so in one line and stop.")
 
 
 # In-task to-do list (Claude-Code-style). Items: {"content": str, "status": ...}.
@@ -1734,15 +1757,20 @@ def undo_last():
 def run_agent(messages, spinner):
     """Drive the reason→act loop until the model produces a final answer."""
     turn_tokens = 0
-    did_work = False     # did this turn actually use tools? (gates next-step tips)
-    edited_code = False  # wrote/edited a code file
-    ran_command = False  # ran a shell command (≈ self-verified)
-    verified = False     # already injected the auto-verify nudge for this task
+    did_work = False       # did this turn actually use tools? (gates next-step tips)
+    edited_code = False    # wrote/edited a code file
+    ran_command = False    # ran a shell command (≈ self-verified)
+    verified = False       # already injected the auto-verify nudge for this task
+    edit_attempted = False # the model emitted at least one edit/write call
+    edit_nudged = False    # already injected the apply-your-edit nudge for this task
+    last_user = next((_text_of(m.get("content")) for m in reversed(messages)
+                      if m.get("role") == "user"), "")
     # Did the user ask to run/verify an (existing) project? Then verify even
     # without edits — like "run this", "make sure it works", "run the tests".
-    verify_requested = _wants_run_verification(
-        next((_text_of(m.get("content")) for m in reversed(messages)
-              if m.get("role") == "user"), ""))
+    verify_requested = _wants_run_verification(last_user)
+    # Did the user ask for a code change? Then if the model only *talks* about
+    # the fix and never edits, nudge it once to actually apply it.
+    change_requested = _wants_code_change(last_user)
     _maybe_auto_compact(messages)
     for step in range(MAX_STEPS):
         spinner.start()
@@ -1780,6 +1808,17 @@ def run_agent(messages, spinner):
         messages.append(assistant_msg)
 
         if not calls:
+            # Apply-your-edit loop: the user asked for a change but the model
+            # ended its turn without ever calling an edit/write tool (a local
+            # model often narrates the patch instead of emitting the call).
+            # Nudge once to actually apply it before declaring the task done.
+            if (AUTO_VERIFY and change_requested and not edit_attempted
+                    and not edit_nudged and not PLAN_MODE):
+                edit_nudged = True
+                messages.append({"role": "user", "content": _EDIT_NUDGE})
+                print(f"\n{DIM}  ⟳ auto-apply: you described a change but didn't make "
+                      f"it — applying now (ESC to skip)…{R}")
+                continue
             # Verify-your-work loop: if code was written (or the user asked to run
             # the project) but nothing was run, nudge once to actually run it and
             # fix failures before declaring the task done.
@@ -1805,6 +1844,7 @@ def run_agent(messages, spinner):
             if c["name"] == "run_bash":
                 ran_command = True
             elif c["name"] in _EDIT_TOOLS:
+                edit_attempted = True
                 try:
                     cargs = json.loads(c["arguments"] or "{}")
                 except (json.JSONDecodeError, TypeError):
@@ -3933,9 +3973,11 @@ def _serve_run(messages):
     turn = 0
     did_work = False
     edited_code = ran_command = verified = False
-    verify_requested = _wants_run_verification(
-        next((_text_of(m.get("content")) for m in reversed(messages)
-              if m.get("role") == "user"), ""))
+    edit_attempted = edit_nudged = False
+    last_user = next((_text_of(m.get("content")) for m in reversed(messages)
+                      if m.get("role") == "user"), "")
+    verify_requested = _wants_run_verification(last_user)
+    change_requested = _wants_code_change(last_user)
     _maybe_auto_compact(messages, emit=_emit)
     for _ in range(MAX_STEPS):
         res = _serve_stream(messages)
@@ -3958,6 +4000,15 @@ def _serve_run(messages):
                                 for x in calls]
         messages.append(am)
         if not calls:
+            # Apply-your-edit loop (before turn_end, so the panel stays busy):
+            # the user asked for a change but the model never emitted an edit/
+            # write call — nudge once to actually apply it.
+            if (AUTO_VERIFY and change_requested and not edit_attempted
+                    and not edit_nudged and not PLAN_MODE):
+                edit_nudged = True
+                messages.append({"role": "user", "content": _EDIT_NUDGE})
+                _emit({"type": "info", "text": "auto-apply: applying the change you described…"})
+                continue
             # Verify-your-work loop (before turn_end, so the panel stays busy
             # through the check): code changed (or the user asked to run the
             # project) but nothing ran → nudge once.
@@ -3986,6 +4037,7 @@ def _serve_run(messages):
             if c["name"] == "run_bash":
                 ran_command = True
             elif c["name"] in _EDIT_TOOLS:
+                edit_attempted = True
                 try:
                     cargs = json.loads(c["arguments"] or "{}")
                 except (json.JSONDecodeError, TypeError):

@@ -14,7 +14,13 @@ endpoint. It runs the model in a reason→act loop with real tools and a permiss
 aiming for Claude-Code-class behavior.
 
 ## Latest changes
-- **Version:** `0.8.9`.
+- **Version:** `0.8.10`.
+- **Apply-your-edit backstop** — fixes "analyzed the cause but never edited the code." A weak/local
+  model often *narrates* a patch instead of emitting an `edit_file` call; the agent loop used to treat
+  any tool-call-free turn as "done," so nothing reached disk. Now `run_agent`/`_serve_run` track
+  `edit_attempted` and, when the user asked for a change (`_wants_code_change`) but no edit/write tool
+  was ever called, inject the `_EDIT_NUDGE` once ("apply it now with edit_file/write_file") and loop.
+  Runs before the verify nudge (apply → then verify). Same `AUTO_VERIFY` / `HERA_NO_VERIFY` switch.
 - **Verify-your-work loop** — Hera runs/tests the code it writes and fixes failures (Claude-Code/
   Codex style). System prompt directive (primary) + a backstop: `run_agent`/`_serve_run` track
   `edited_code`/`ran_command`; if code was edited but nothing ran, inject the verify nudge once to
