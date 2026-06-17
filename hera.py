@@ -153,7 +153,7 @@ def save_config(updates):
         pass
 
 
-VERSION = "0.8.30"   # bump on every released change; mirrored in cli/VERSION
+VERSION = "0.8.31"   # bump on every released change; mirrored in cli/VERSION
 NAME    = _env("HERA_NAME", default="Hera")
 # No server host is baked into the source (so this repo can be public, revealing
 # neither key nor host). Each user supplies the endpoint + key once — via env
@@ -179,7 +179,7 @@ VISION_URL   = _cfg("HERA_VISION_URL", key="vision_url", default="").rstrip("/")
 VISION_MODEL = _env("HERA_VISION_MODEL", default="")
 IMAGE_EXTS   = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
 YOLO    = _truthy(_env("HERA_YOLO", "QWEN_YOLO"))
-MAX_STEPS      = int(_env("HERA_MAX_STEPS", "QWEN_MAX_STEPS", default="25"))
+MAX_STEPS      = int(_env("HERA_MAX_STEPS", "QWEN_MAX_STEPS", default="0"))  # 0 = unlimited
 HIDE_REASONING = _truthy(_env("HERA_HIDE_REASONING", "QWEN_HIDE_REASONING"))
 
 # Output style (Claude-Code-style): shapes how answers are written. Built-ins
@@ -1229,8 +1229,7 @@ def tool_edit_file(path, old_string, new_string, replace_all=False):
     if count == 0:
         return "[error] old_string not found in file (must match exactly)"
     if count > 1 and not replace_all:
-        return (f"[error] old_string is not unique ({count} matches). "
-                f"Add more context to make it unique, or set replace_all=true.")
+        replace_all = True  # identical matches: promote silently
     new_text = text.replace(old_string, new_string)
     with open(p, "w", encoding="utf-8") as f:
         f.write(new_text)
@@ -1263,8 +1262,7 @@ def tool_multi_edit(path, edits):
         if count == 0:
             return f"[error] edit #{i + 1}: old_string not found (no change written)"
         if count > 1 and not replace_all:
-            return (f"[error] edit #{i + 1}: old_string not unique ({count} matches). "
-                    f"Add context or set replace_all=true (no change written).")
+            replace_all = True  # identical matches: promote silently
         text = text.replace(old_s, new_s) if replace_all else text.replace(old_s, new_s, 1)
         applied += count if replace_all else 1
     with open(p, "w", encoding="utf-8") as f:
@@ -2625,7 +2623,12 @@ def run_agent(messages, spinner):
     change_requested = _wants_code_change(last_user)
     globals()["_TURN_THINK"] = _keyword_think_level(last_user)
     _maybe_auto_compact(messages)
-    for step in range(MAX_STEPS):
+    step = 0
+    while True:
+        if MAX_STEPS and step >= MAX_STEPS:
+            print(f"\n{RED}[stopped] hit MAX_STEPS={MAX_STEPS} tool round-trips{R}\n")
+            return True
+        step += 1
         spinner.start()
         # Only the streaming call watches for ESC — tool approvals use input()
         # on the same stdin, so the watcher must be off while they run.
@@ -2705,9 +2708,6 @@ def run_agent(messages, spinner):
                 if _is_code_file(cargs.get("path", "")):
                     edited_code = True
             messages.append({"role": "tool", "tool_call_id": c["id"], "content": output})
-
-    print(f"\n{RED}[stopped] hit MAX_STEPS={MAX_STEPS} tool round-trips{R}\n")
-    return True
 
 
 def _parse_suggestions(raw):
@@ -2870,7 +2870,8 @@ def _exec_call(c, indent=""):
     try:
         output = TOOLS[name](**args)
     except TypeError as exc:
-        output = f"[error] bad arguments: {exc}"
+        msg = str(exc).replace(f"tool_{name}()", f"{name}()")
+        output = f"[error] bad arguments: {msg}"
     except Exception as exc:  # noqa: BLE001 — surface to the model
         output = f"[error] {type(exc).__name__}: {exc}"
     finally:
@@ -2944,7 +2945,11 @@ def run_subagent(description, agent=None, model=None, quiet=False):
         if not quiet:
             print(f"\n  {BLUE}⤷ {tag} started{R} {DIM}{description[:70]}{R}")
         final = ""
-        for _ in range(MAX_STEPS):
+        sub_step = 0
+        while True:
+            if MAX_STEPS and sub_step >= MAX_STEPS:
+                break
+            sub_step += 1
             if not quiet:
                 spinner.start()
             res = stream_turn(msgs, spinner, tools=sub_schemas, model_override=sub_model)
@@ -3581,14 +3586,17 @@ def print_shared_skills(skill_id=""):
     print(f"\n{DIM}use /skills <id> for detail. Explicit activation: @skill:<id> or /skill <id>{R}\n")
 
 
-def resolve_identity():
+def resolve_identity(force=False):
     """Make the API key *be* the identity: ask the proxy who this key belongs to
     and cache the account email, so sessions are labelled by the real user with
     no HERA_USER to set. Idempotent and fail-silent — falls back to the key hash
-    if the proxy is old or unreachable. Returns the known/resolved email."""
+    if the proxy is old or unreachable. Returns the known/resolved email.
+
+    Pass force=True (e.g. `hera whoami`) to bypass the cache and always query
+    the API so the displayed identity reflects the current key."""
     global USER_ID, SESSIONS_DIR, USER_EMAIL, USER_NAME
     known = _env("HERA_USER") or _FILE_CFG.get("user")
-    if known:
+    if known and not force:
         USER_EMAIL = known
         USER_NAME = USER_NAME or _FILE_CFG.get("user_name", "")
         return known
@@ -6196,7 +6204,7 @@ def main():
               f"Run `hera` to sign in with a different key.{R}")
         return
     if args.command == "whoami":
-        resolve_identity()
+        resolve_identity(force=True)
         print(whoami_label())
         return
     if args.command == "mcp-login":
