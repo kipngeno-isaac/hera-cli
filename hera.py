@@ -256,7 +256,8 @@ _HOOK_CONTEXT = ""   # stdout from the last UserPromptSubmit/SessionStart hooks
 # Custom keybindings: ~/.config/hera/keybindings.json maps "ctrl+r" → "/review" etc.
 # Supported: ctrl+[a-z] (byte 0x01-0x1a), alt+[a-z] (ESC+char).
 def _load_keybindings():
-    p = os.path.join(CONFIG_DIR, "keybindings.json")
+    _cfg_dir = os.path.dirname(CONFIG_PATH) or os.path.expanduser("~/.config/hera")
+    p = os.path.join(_cfg_dir, "keybindings.json")
     if not os.path.isfile(p):
         return {}
     try:
