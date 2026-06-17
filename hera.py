@@ -253,6 +253,30 @@ AUTO_COMPACT_AT = float(_cfg("HERA_AUTO_COMPACT_AT", key="auto_compact_at", defa
 HOOKS = _FILE_CFG.get("hooks") if isinstance(_FILE_CFG.get("hooks"), dict) else {}
 _HOOK_CONTEXT = ""   # stdout from the last UserPromptSubmit/SessionStart hooks
 
+# Custom keybindings: ~/.config/hera/keybindings.json maps "ctrl+r" → "/review" etc.
+# Supported: ctrl+[a-z] (byte 0x01-0x1a), alt+[a-z] (ESC+char).
+def _load_keybindings():
+    p = os.path.join(CONFIG_DIR, "keybindings.json")
+    if not os.path.isfile(p):
+        return {}
+    try:
+        raw = json.loads(open(p, encoding="utf-8").read())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    ctrl_map, alt_map = {}, {}
+    for key_str, cmd in raw.items():
+        k = key_str.lower().strip()
+        if k.startswith("ctrl+") and len(k) == 6 and k[5].isalpha():
+            byte = ord(k[5]) - ord('a') + 1  # ctrl+a=0x01 … ctrl+z=0x1a
+            ctrl_map[byte] = cmd
+        elif k.startswith("alt+") and len(k) == 5 and k[4].isalpha():
+            alt_map[k[4]] = cmd
+    return {"ctrl": ctrl_map, "alt": alt_map}
+
+KEYBINDINGS = _load_keybindings()
+_KB_CTRL = KEYBINDINGS.get("ctrl", {})
+_KB_ALT  = KEYBINDINGS.get("alt", {})
+
 # Fine-grained permissions: config["permissions"] = {"allow":[...],"ask":[...],"deny":[...]}.
 # Each entry is "tool" or "tool(<glob>)" — e.g. "run_bash(git *)", "edit_file(src/**)".
 _PERMS = _FILE_CFG.get("permissions") if isinstance(_FILE_CFG.get("permissions"), dict) else {}
@@ -506,6 +530,29 @@ def _project_hint():
     cmds = _detect_project_commands()
     return (" This project's toolchain looks like: " + ", ".join(f"`{c}`" for c in cmds)
             + " — prefer those to verify.") if cmds else ""
+
+
+def _git_context():
+    """Return branch/status/recent commits for the cwd git repo, or empty string."""
+    try:
+        r = subprocess.run("git rev-parse --is-inside-work-tree",
+                           shell=True, capture_output=True, text=True, cwd=os.getcwd())
+        if r.returncode != 0:
+            return ""
+        branch = subprocess.run("git branch --show-current", shell=True,
+                                capture_output=True, text=True, cwd=os.getcwd()).stdout.strip()
+        status = subprocess.run("git status --short", shell=True,
+                                capture_output=True, text=True, cwd=os.getcwd()).stdout.strip()
+        log = subprocess.run("git log --oneline -5", shell=True,
+                             capture_output=True, text=True, cwd=os.getcwd()).stdout.strip()
+        parts = [f"branch: {branch or '(detached HEAD)'}"]
+        if status:
+            parts.append(f"dirty files:\n{status}")
+        if log:
+            parts.append(f"recent commits:\n{log}")
+        return "\n".join(parts)
+    except Exception:
+        return ""
 
 
 def _verify_nudge():
@@ -4424,6 +4471,154 @@ def _config_summary():
     }
 
 
+def _doctor_get(url, timeout=4):
+    """Silent GET; returns (status_code, True) or (None, False)."""
+    try:
+        r = requests.get(url, timeout=timeout)
+        return r.status_code, True
+    except Exception:
+        return None, False
+
+
+def _derive_cli_server():
+    """Derive the CLI file-server URL (port 8081) from API_URL."""
+    if not API_URL:
+        return None
+    return re.sub(r":\d+(/.*)?$", ":8081", API_URL.rstrip("/"))
+
+
+def _self_update(cli_base):
+    """Download latest hera.py from cli_base and atomically replace this script."""
+    hera_path = os.path.abspath(__file__)
+    try:
+        resp = requests.get(f"{cli_base}/hera.py", timeout=60, stream=True)
+        resp.raise_for_status()
+        tmp = hera_path + ".new"
+        with open(tmp, "wb") as f:
+            for chunk in resp.iter_content(8192):
+                f.write(chunk)
+        os.chmod(tmp, os.stat(hera_path).st_mode)
+        os.replace(tmp, hera_path)
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
+def _run_doctor():
+    """All-in-one: self-update + Docker stack health + CLI diagnostics/auto-fix."""
+    ok_s   = f"{GREEN}✓{R}"
+    fail_s = f"{YELL}✗{R}"
+    warn_s = f"{YELL}~{R}"
+    fix_s  = f"{GREEN}↑{R}"
+
+    print(f"\n{BOLD}Hera Doctor{R}\n")
+
+    # ── 1. Self-update ──────────────────────────────────────────────────────
+    print(f"  {BOLD}Version{R}")
+    cli_base = _derive_cli_server()
+    print(f"    current : {VERSION}")
+    if cli_base:
+        try:
+            latest = requests.get(f"{cli_base}/VERSION", timeout=4).text.strip()
+            if latest == VERSION:
+                print(f"    {ok_s} up to date")
+            else:
+                print(f"    {warn_s} update available: {latest}")
+                ans = input(f"    {CYAN}Update now? [y/N]{R} ").strip().lower()
+                if ans == "y":
+                    print("    downloading…", end="", flush=True)
+                    ok, err = _self_update(cli_base)
+                    print(f"\r    {fix_s if ok else fail_s} "
+                          f"{'updated — restart hera to apply' if ok else f'failed: {err}'}")
+        except Exception as e:
+            print(f"    {warn_s} version check failed: {e}")
+    else:
+        print(f"    {warn_s} HERA_API_URL not set — cannot reach CLI server")
+
+    # ── 2. Docker stack health ──────────────────────────────────────────────
+    print(f"\n  {BOLD}Stack health{R}")
+    if API_URL:
+        m = re.search(r"https?://([^:/]+)", API_URL)
+        host = m.group(1) if m else "localhost"
+        m2 = re.search(r":(\d+)", API_URL)
+        proxy_port = int(m2.group(1)) if m2 else 8090
+        services = [
+            ("auth-proxy",  host, proxy_port, "/health"),
+            ("qwen-server", host, 8080,        "/health"),
+            ("open-webui",  host, 3000,        "/health"),
+            ("grafana",     host, 3001,        "/api/health"),
+            ("prometheus",  host, 9090,        "/-/healthy"),
+            ("gpustack",    host, 8888,        "/"),
+            ("cli-server",  host, 8081,        "/VERSION"),
+        ]
+        for name, h, port, path in services:
+            code, up = _doctor_get(f"http://{h}:{port}{path}")
+            sym = ok_s if up else fail_s
+            detail = f"HTTP {code}" if code else "unreachable"
+            print(f"    {sym} {name:<14}: {detail}")
+    else:
+        print(f"    {warn_s} HERA_API_URL not set — cannot check stack")
+
+    # ── 3. CLI diagnostics + auto-fix ──────────────────────────────────────
+    print(f"\n  {BOLD}CLI diagnostics{R}")
+
+    print(f"    {ok_s if API_KEY else fail_s} API key     : "
+          f"{'set' if API_KEY else 'NOT SET — run hera to configure'}")
+    print(f"    {ok_s} model       : {MODEL}")
+    print(f"    {ok_s} sandbox     : {sandbox_label()}")
+
+    try:
+        emb_ok = embeddings_available()
+    except Exception:
+        emb_ok = False
+    print(f"    {ok_s if emb_ok else warn_s} embeddings  : "
+          f"{'enabled (semantic_search active)' if emb_ok else 'disabled — set HERA_EMBED_URL'}")
+
+    print(f"    {ok_s if WEB_ENABLED else warn_s} web search  : "
+          f"{'on (' + SEARCH_PROVIDER + ')' if WEB_ENABLED else 'off (HERA_NO_WEB=1)'}")
+
+    print(f"    {ok_s} MCP servers : {len(_mcp_clients)} connected")
+    print(f"    {ok_s} memory      : {len(load_memory())} file(s) loaded")
+
+    git_r = subprocess.run("git --version", shell=True, capture_output=True, text=True)
+    print(f"    {ok_s if git_r.returncode == 0 else warn_s} git         : "
+          f"{git_r.stdout.strip() if git_r.returncode == 0 else 'not found'}")
+
+    gh_r = subprocess.run("gh --version", shell=True, capture_output=True, text=True)
+    if gh_r.returncode == 0:
+        print(f"    {ok_s} gh          : {gh_r.stdout.splitlines()[0].strip()} (needed for /pr)")
+    else:
+        print(f"    {warn_s} gh          : not found — needed for /pr")
+        ans = input(f"    {CYAN}Install gh now? [y/N]{R} ").strip().lower()
+        if ans == "y":
+            result = tool_install("gh", "GitHub CLI for /pr command")
+            sym = ok_s if not result.startswith("[error]") else fail_s
+            print(f"    {sym} {result}")
+
+    kb_path = os.path.join(CONFIG_DIR, "keybindings.json")
+    if os.path.isfile(kb_path):
+        nc = len(KEYBINDINGS.get("ctrl", {})); na = len(KEYBINDINGS.get("alt", {}))
+        print(f"    {ok_s} keybindings : {nc} ctrl, {na} alt binding(s)")
+    else:
+        print(f"    {warn_s} keybindings : none — {kb_path}")
+        ans = input(f"    {CYAN}Create default keybindings? [y/N]{R} ").strip().lower()
+        if ans == "y":
+            defaults = {"ctrl+r": "/review", "ctrl+p": "/pr",
+                        "ctrl+g": "/diff",   "alt+d":  "/doctor"}
+            try:
+                os.makedirs(CONFIG_DIR, exist_ok=True)
+                open(kb_path, "w").write(json.dumps(defaults, indent=2))
+                print(f"    {fix_s} created {kb_path}")
+                print(f"      {DIM}ctrl+r=/review  ctrl+p=/pr  ctrl+g=/diff  alt+d=/doctor{R}")
+                print(f"      {DIM}restart hera to activate{R}")
+            except OSError as e:
+                print(f"    {fail_s} write failed: {e}")
+
+    t = SESSION.get("total", 0)
+    print(f"    {ok_s} session     : {t:,} tok, {SESSION.get('requests', 0)} requests{_cost_suffix()}")
+    print()
+
+
 # A per-turn override set from in-prompt keywords ("think hard", "ultrathink").
 _TURN_THINK = None
 _THINK_KEYWORD_RE = re.compile(
@@ -4536,6 +4731,9 @@ def system_prompt():
             body = body[:MEMORY_MAX_TOTAL - total]
             total += len(body)
             base += f"\n\n--- {scope} memory ({os.path.basename(path)}) ---\n{body}"
+    git_ctx = _git_context()
+    if git_ctx:
+        base += f"\n\nGit context (live, auto-refreshed each session):\n{git_ctx}"
     return base
 
 
@@ -4731,6 +4929,9 @@ SLASH_COMMANDS = [
     ("/init",      "",          "analyze the project and generate a HERA.md"),
     ("/export",    "[path]",    "save the conversation to Markdown (or .json)"),
     ("/plugins",   "[install]", "list plugins, browse the marketplace, or install one"),
+    ("/doctor",    "",          "self-update + stack health check + CLI diagnostics/auto-fix"),
+    ("/review",    "",          "code-review the current git diff"),
+    ("/pr",        "[title]",   "create a GitHub PR from the current branch (uses gh)"),
     ("/diff",      "",          "show the working-tree git diff"),
     ("/compact",   "",          "summarize the conversation to free up context"),
     ("/tokens",    "",          "show token usage (and cost, if priced) this session"),
@@ -4751,7 +4952,7 @@ SLASH_COMMANDS = [
     ("/vim",       "",          "toggle vim keybindings in the prompt editor"),
     ("/think",     "[level]",   "thinking budget: off / normal / hard"),
     ("/output-style", "[name]", "answer style: default / concise / explanatory / learning"),
-    ("/statusline", "",         "show the custom status-line command"),
+    ("/statusline", "",         "show/set the status line (set to 'builtin' for built-in bar)"),
     ("/cwd",       "",          "show the working directory"),
     ("/new",       "",          "save current and start a fresh session"),
     ("/clear",     "",          "same as /new (fresh conversation)"),
@@ -4965,6 +5166,9 @@ class RawLineReader:
         if c == 0x1b:
             return self._escape()
         if c < 0x20:
+            # Check custom ctrl keybindings before discarding.
+            if c in _KB_CTRL:
+                return f"KEYBIND:{_KB_CTRL[c]}"
             return None  # ignore other control bytes
         # printable / start of a UTF-8 sequence
         n = 1 if c < 0x80 else (2 if c >> 5 == 0b110 else (3 if c >> 4 == 0b1110 else 4))
@@ -4980,7 +5184,11 @@ class RawLineReader:
         if not r:
             return "ESC"
         nxt = os.read(self.fd, 1)
+        # Alt+letter: ESC followed by a single letter (not [ or O).
         if nxt not in (b"[", b"O"):
+            ch = nxt.decode("latin-1", errors="replace").lower()
+            if ch in _KB_ALT:
+                return f"KEYBIND:{_KB_ALT[ch]}"
             return "ESC"
         final = os.read(self.fd, 1)
         arrows = {b"A": "UP", b"B": "DOWN", b"C": "RIGHT", b"D": "LEFT",
@@ -5068,6 +5276,11 @@ class RawLineReader:
                     if act == "submit":
                         self._close(); return self.buf
                     self.sel = 0; self._refresh(); continue
+
+                if isinstance(key, str) and key.startswith("KEYBIND:"):
+                    self.buf = key[len("KEYBIND:"):]
+                    self._close()
+                    return self.buf
 
                 if key == "ENTER":
                     if active and matches:
@@ -6058,10 +6271,35 @@ def main():
         close_extensions()
 
 
+def _builtin_statusline():
+    """Built-in status line — model · git branch · tokens · active modes."""
+    parts = [f"{BOLD}{MODEL.split('/')[-1]}{R}"]
+    try:
+        r = subprocess.run("git branch --show-current", shell=True,
+                           capture_output=True, text=True, cwd=os.getcwd(), timeout=1)
+        if r.returncode == 0 and r.stdout.strip():
+            parts.append(f"git:{r.stdout.strip()}")
+    except Exception:
+        pass
+    t = SESSION.get("total", 0)
+    if t:
+        parts.append(f"{t:,} tok")
+    if PLAN_MODE:
+        parts.append(f"{YELL}plan{R}")
+    if AUTO_MODE != "read":
+        parts.append(f"auto:{AUTO_MODE}")
+    if THINK_LEVEL not in ("normal", ""):
+        parts.append(f"think:{THINK_LEVEL}")
+    print(f"{DIM}{'  ·  '.join(parts)}{R}")
+
+
 def _render_statusline():
     """Run the configured statusline command (session JSON on stdin) and print
     its stdout above the prompt, like Claude Code's statusLine."""
     if not STATUSLINE_CMD:
+        return
+    if STATUSLINE_CMD == "builtin":
+        _builtin_statusline()
         return
     payload = json.dumps({"model": MODEL, "cwd": os.getcwd(),
                           "session_tokens": SESSION.get("total", 0),
@@ -6202,6 +6440,62 @@ def _repl(messages, spinner):
                         print(f"  {CYAN}{p['name']}{R} {DIM}{p['version']} "
                               f"{'· '.join(bits)} — {p['description']}{R}")
                     print()
+            continue
+        if cmd == "/doctor":
+            _run_doctor()
+            continue
+        if cmd == "/review":
+            inrepo = subprocess.run("git rev-parse --is-inside-work-tree",
+                                    shell=True, capture_output=True, text=True, cwd=os.getcwd())
+            if inrepo.returncode != 0:
+                print(f"\n{DIM}not a git repository — /review needs git{R}\n")
+                continue
+            diff = subprocess.run("git diff HEAD", shell=True,
+                                  capture_output=True, text=True, cwd=os.getcwd()).stdout
+            if not diff.strip():
+                diff = subprocess.run("git diff --cached", shell=True,
+                                      capture_output=True, text=True, cwd=os.getcwd()).stdout
+            if not diff.strip():
+                print(f"\n{DIM}no changes to review (working tree is clean){R}\n")
+                continue
+            mark_turn(messages, "/review")
+            messages.append({"role": "user", "content":
+                f"Please review this git diff for bugs, issues, style problems, and improvements. "
+                f"Be specific about file and line. Group findings by severity (critical / warning / suggestion).\n\n"
+                f"```diff\n{diff[:10000]}\n```"})
+            try:
+                ok = run_agent(messages, spinner)
+            except KeyboardInterrupt:
+                spinner.stop(); print(f"\n{DIM}(interrupted){R}\n"); ok = True
+            if not ok:
+                del messages[len(messages) - 1:]
+                if TURN_MARKS: TURN_MARKS.pop()
+            save_session(messages)
+            continue
+        if cmd == "/pr" or cmd.startswith("/pr "):
+            title_hint = user_input[3:].strip()
+            mark_turn(messages, "/pr")
+            pr_prompt = (
+                "Create a GitHub pull request for the current branch. "
+                "Steps: (1) run `git log main..HEAD --oneline` to summarise what changed, "
+                "(2) run `git branch --show-current` to confirm the branch name, "
+                "(3) use `gh pr create` with a clear title and a brief body (## Summary bullet points + ## Test plan). "
+            )
+            if title_hint:
+                pr_prompt += f"Use this as the PR title: {title_hint!r}. "
+            pr_prompt += (
+                "If `gh` is not installed, call tool_install('gh', 'GitHub CLI for PR creation') first. "
+                "If `gh auth status` fails, tell the user to run `gh auth login` in a separate terminal."
+            )
+            messages.append({"role": "user", "content": pr_prompt})
+            try:
+                ok = run_agent(messages, spinner)
+            except KeyboardInterrupt:
+                spinner.stop(); print(f"\n{DIM}(interrupted){R}\n"); ok = True
+            if not ok:
+                del messages[len(messages) - 1:]
+                if TURN_MARKS: TURN_MARKS.pop()
+            save_session(messages)
             continue
         if cmd == "/diff":
             inrepo = subprocess.run("git rev-parse --is-inside-work-tree",
