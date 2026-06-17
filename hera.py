@@ -153,7 +153,7 @@ def save_config(updates):
         pass
 
 
-VERSION = "0.8.32"   # bump on every released change; mirrored in cli/VERSION
+VERSION = "0.8.33"   # bump on every released change; mirrored in cli/VERSION
 NAME    = _env("HERA_NAME", default="Hera")
 # No server host is baked into the source (so this repo can be public, revealing
 # neither key nor host). Each user supplies the endpoint + key once — via env
@@ -169,7 +169,7 @@ PROVIDER = (_cfg("HERA_PROVIDER", key="provider", default="openai") or "openai")
 ANTHROPIC_BASE = _cfg("HERA_ANTHROPIC_BASE", key="anthropic_base",
                       default="https://api.anthropic.com").rstrip("/")
 ANTHROPIC_VERSION = _env("HERA_ANTHROPIC_VERSION", default="2023-06-01")
-MAX_OUTPUT_TOKENS = int(_env("HERA_MAX_OUTPUT_TOKENS", default="8192") or 8192)
+MAX_OUTPUT_TOKENS = int(_env("HERA_MAX_OUTPUT_TOKENS", default="32768") or 32768)
 # Vim keybindings in the prompt editor (toggle with /vim or HERA_VIM=1).
 VIM_MODE = _truthy(_env("HERA_VIM"))
 # Vision: the main model is text-only. If a vision-capable OpenAI-compatible
@@ -203,13 +203,13 @@ THINK_LEVEL = (_cfg("HERA_THINK", key="think", default="normal") or "normal").lo
 # turn (session JSON on stdin), like Claude Code's statusLine.
 STATUSLINE_CMD = _cfg("HERA_STATUSLINE", key="statusline", default="")
 
-MAX_TOOL_OUTPUT = 12000    # chars; tool results longer than this are truncated
+MAX_TOOL_OUTPUT = int(_env("HERA_MAX_TOOL_OUTPUT", default="0"))  # 0 = unlimited
 MAX_READ_BYTES  = 256_000  # cap read_file size
 MAX_IMAGE_BYTES = 10_000_000  # cap an attached image before base64 (≈13MB encoded)
 
 # Web access: the model can search/fetch the live web when it lacks info.
 WEB_ENABLED = not _truthy(_env("HERA_NO_WEB"))      # on by default; HERA_NO_WEB=1 disables
-WEB_TIMEOUT = int(_env("HERA_WEB_TIMEOUT", default="20"))
+WEB_TIMEOUT = int(_env("HERA_WEB_TIMEOUT", default="60"))
 _WEB_UA = f"Mozilla/5.0 (X11; Linux x86_64) HeraCLI/{VERSION}"
 # Web search provider: duckduckgo (default, keyless HTML scrape) or a higher-
 # quality API — tavily / brave / searxng — via HERA_SEARCH_KEY / HERA_SEARCH_URL.
@@ -243,7 +243,7 @@ PRICE_OUT = float(_cfg("HERA_PRICE_OUT", key="price_out", default="0") or 0)
 
 # Auto-compaction: when the estimated prompt size crosses AUTO_COMPACT_AT * the
 # context window, the history is summarized before the next turn. 0 disables.
-CONTEXT_TOKENS  = int(_cfg("HERA_CONTEXT_TOKENS", key="context_tokens", default="32000") or 0)
+CONTEXT_TOKENS  = int(_cfg("HERA_CONTEXT_TOKENS", key="context_tokens", default="131072") or 0)
 AUTO_COMPACT_AT = float(_cfg("HERA_AUTO_COMPACT_AT", key="auto_compact_at", default="0.8") or 0)
 
 # User hooks: config["hooks"] = {"PreToolUse":[{"matcher":"run_bash","command":"..."}], …}.
@@ -1468,7 +1468,7 @@ def tool_install(program, reason=""):
     return msg if ok else f"[error] {msg}"
 
 
-def tool_run_bash(command, timeout=120, run_in_background=False, _retry=False):
+def tool_run_bash(command, timeout=3600, run_in_background=False, _retry=False):
     if run_in_background:
         return _bash_background_start(command)
     argv, use_shell = _sandbox_argv(command)
@@ -1729,7 +1729,7 @@ TOOL_SCHEMAS = [
                         "stdout, stderr, and exit code."),
         "parameters": {"type": "object", "properties": {
             "command": {"type": "string", "description": "Shell command to run"},
-            "timeout": {"type": "integer", "description": "Timeout in seconds (default 120)"},
+            "timeout": {"type": "integer", "description": "Timeout in seconds (default 3600)"},
             "run_in_background": {"type": "boolean", "description": ("Start a long-running command "
                 "(server, watcher, build) detached and return a job id immediately; read its output "
                 "later with bash_output. Default false.")},
@@ -2578,7 +2578,7 @@ def rewind_picker(messages, n=None):
 
 def context_report(messages):
     """A Claude-Code-style /context breakdown: where the window is going."""
-    win = CONTEXT_TOKENS or 32000
+    win = CONTEXT_TOKENS or 131072
     sys_tok = len(_text_of(messages[0].get("content"))) // 4 if messages else 0
     convo_tok = _estimate_tokens(messages[1:]) if len(messages) > 1 else 0
     todo_tok = len(json.dumps(TODOS)) // 4 if TODOS else 0
@@ -2890,7 +2890,7 @@ def _exec_call(c, indent=""):
     _emit_telemetry("tool", tool=name, error=is_err)
     _emit_metric("hera.tool.calls", 1, tool=name, error=is_err)
 
-    if len(output) > MAX_TOOL_OUTPUT:
+    if MAX_TOOL_OUTPUT and len(output) > MAX_TOOL_OUTPUT:
         output = output[:MAX_TOOL_OUTPUT] + f"\n…[truncated, {len(output)} chars total]"
     return output
 
@@ -3241,7 +3241,7 @@ def tool_bash_output(id, **_ignored):
             data = f.read()
     except OSError:
         data = ""
-    if len(data) > MAX_TOOL_OUTPUT:
+    if MAX_TOOL_OUTPUT and len(data) > MAX_TOOL_OUTPUT:
         data = data[-MAX_TOOL_OUTPUT:]
     status = "running" if rc is None else f"exited ({rc})"
     return f"job {id} [{status}] {job['command']}\n{data or '(no output yet)'}"
@@ -5744,7 +5744,7 @@ def _serve_exec(c):
     if name == "todo_write" and not is_err:
         _emit({"type": "todos", "items": list(TODOS)})
     _run_hooks("PostToolUse", name, args, out)
-    if len(out) > MAX_TOOL_OUTPUT:
+    if MAX_TOOL_OUTPUT and len(out) > MAX_TOOL_OUTPUT:
         out = out[:MAX_TOOL_OUTPUT] + f"\n…[truncated, {len(out)} chars total]"
     return out
 
