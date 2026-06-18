@@ -153,7 +153,7 @@ def save_config(updates):
         pass
 
 
-VERSION = "0.8.36"   # bump on every released change; mirrored in cli/VERSION
+VERSION = "0.8.37"   # bump on every released change; mirrored in cli/VERSION
 NAME    = _env("HERA_NAME", default="Hera")
 # No server host is baked into the source (so this repo can be public, revealing
 # neither key nor host). Each user supplies the endpoint + key once — via env
@@ -895,15 +895,16 @@ ACCENT = CYAN
 # fall back to plain ASCII equivalents everywhere in the UI.
 import locale as _locale
 def _detect_utf8():
-    # Python 3.7+ coerces the C locale to UTF-8 (PEP 538), so sys.stdout.encoding
-    # always reports utf-8 even when the actual terminal isn't set to UTF-8.
-    # The reliable signal is the LANG/LC_ALL/LC_CTYPE environment variables, which
-    # reflect the locale the SSH session or terminal was actually started with.
+    # HERA_ASCII=1 is a manual override for when the SSH client terminal is not
+    # set to UTF-8 but the server LANG still says en_US.UTF-8 (server env vars
+    # can't detect the client's terminal encoding). Set in ~/.bashrc on the remote
+    # host: export HERA_ASCII=1
+    if os.environ.get("HERA_ASCII", "").strip() in ("1", "true", "yes"):
+        return False
     for var in ("LC_ALL", "LC_CTYPE", "LANG"):
         val = os.environ.get(var, "").lower().replace("-", "")
         if val:
             return "utf8" in val or "utf" in val
-    # No locale env vars set — check preferred encoding as last resort
     enc = (_locale.getpreferredencoding(False) or "").lower().replace("-", "")
     return "utf8" in enc or "utf" in enc
 _UTF8 = _detect_utf8()
