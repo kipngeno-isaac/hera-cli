@@ -153,7 +153,7 @@ def save_config(updates):
         pass
 
 
-VERSION = "0.8.40"   # bump on every released change; mirrored in cli/VERSION
+VERSION = "0.8.41"   # bump on every released change; mirrored in cli/VERSION
 NAME    = _env("HERA_NAME", default="Hera")
 # No server host is baked into the source (so this repo can be public, revealing
 # neither key nor host). Each user supplies the endpoint + key once — via env
@@ -4804,7 +4804,11 @@ def system_prompt():
         "or configured, check the actual live state (docker ps, docker logs, curl health "
         "endpoints, cat config files) rather than inferring from memory or prior context.\n"
         "5. IF A COMMAND CAN FAIL, say exactly how to confirm it worked (the expected output "
-        "or the verification command) so the user knows whether the fix took effect."
+        "or the verification command) so the user knows whether the fix took effect.\n"
+        "6. STOP AFTER TWO FAILED ATTEMPTS: if an approach fails, try ONE alternative. "
+        "If that also fails, STOP immediately — do not invent more workarounds. "
+        "Report exactly what failed, the error output, and what the user should do next. "
+        "Never spiral through multiple variations of the same failing strategy."
     )
     base += (" For any task with more than ~3 steps, call todo_write first to lay out the plan as "
              "a checklist, then update it as you go SYM_EMDASH mark each step completed and set the next one "
@@ -4817,9 +4821,10 @@ def system_prompt():
                  "saying you're done SYM_EMDASH run the project's tests/build/linter if present, or otherwise "
                  "execute the affected file or function (pytest, npm test/build, python <file>, "
                  "node <file>, go build ./SYM_ELLIPSIS, etc.). If verification fails, read the error, fix the "
-                 "root cause, and re-run; repeat until it passes or you're genuinely blocked (then "
-                 "explain what's blocking). When asked to run a project or codebase, get it actually "
-                 "running and fix what breaks. Prefer the smallest relevant check.")
+                 "root cause, and re-run ONCE. If it still fails after one fix attempt, STOP "
+                 "SYM_EMDASH report the exact error and what needs to be resolved, do not keep looping. "
+                 "When asked to run a project or codebase, get it actually running and fix what "
+                 "breaks. Prefer the smallest relevant check.")
         base += _project_hint()
     if PLAN_MODE:
         base += (" PLAN MODE IS ON. Investigate with read-only tools only SYM_EMDASH do NOT modify files, "
