@@ -153,7 +153,7 @@ def save_config(updates):
         pass
 
 
-VERSION = "0.8.34"   # bump on every released change; mirrored in cli/VERSION
+VERSION = "0.8.35"   # bump on every released change; mirrored in cli/VERSION
 NAME    = _env("HERA_NAME", default="Hera")
 # No server host is baked into the source (so this repo can be public, revealing
 # neither key nor host). Each user supplies the endpoint + key once — via env
@@ -909,7 +909,8 @@ def render_md_line(line, state):
         if state["code"]:
             return f"  {GREY}│{R} {line}"
         if re.match(r"^#{1,6}\s", stripped):
-            return f"{BOLD}{CYAN}{re.sub(r'^#{1,6}s*', '', stripped).lstrip('# ')}{R}"
+            _heading_text = re.sub(r"^#{1,6}\s*", "", stripped)
+            return f"{BOLD}{CYAN}{_md_inline(_heading_text)}{R}"
         m = re.match(r"^(\s*)[-*+]\s+(.*)", line)
         if m:
             return f"{m.group(1)}  {CYAN}•{R} {_md_inline(m.group(2))}"
