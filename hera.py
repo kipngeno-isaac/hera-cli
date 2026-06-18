@@ -153,7 +153,7 @@ def save_config(updates):
         pass
 
 
-VERSION = "0.8.39"   # bump on every released change; mirrored in cli/VERSION
+VERSION = "0.8.40"   # bump on every released change; mirrored in cli/VERSION
 NAME    = _env("HERA_NAME", default="Hera")
 # No server host is baked into the source (so this repo can be public, revealing
 # neither key nor host). Each user supplies the endpoint + key once — via env
@@ -1820,8 +1820,15 @@ TOOL_SCHEMAS = [
     }},
     {"type": "function", "function": {
         "name": "run_bash",
-        "description": ("Run a shell command in the current working directory and return "
-                        "stdout, stderr, and exit code."),
+        "description": (
+            "Run a shell command in the current working directory and return "
+            "stdout, stderr, and exit code. "
+            "IMPORTANT: output is returned only after the command exits — always bound "
+            "commands that run indefinitely: use `ping -c 4` (not bare `ping`), "
+            "`tail -n 50` (not `tail -f`), `timeout 10 <cmd>` for anything else that "
+            "might loop. For genuinely long-running processes (servers, watchers) use "
+            "run_in_background instead."
+        ),
         "parameters": {"type": "object", "properties": {
             "command": {"type": "string", "description": "Shell command to run"},
             "timeout": {"type": "integer", "description": "Timeout in seconds (default 3600)"},
