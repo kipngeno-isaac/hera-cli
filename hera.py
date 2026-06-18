@@ -153,7 +153,7 @@ def save_config(updates):
         pass
 
 
-VERSION = "0.8.37"   # bump on every released change; mirrored in cli/VERSION
+VERSION = "0.8.38"   # bump on every released change; mirrored in cli/VERSION
 NAME    = _env("HERA_NAME", default="Hera")
 # No server host is baked into the source (so this repo can be public, revealing
 # neither key nor host). Each user supplies the endpoint + key once — via env
@@ -767,6 +767,12 @@ def sandbox_label():
 def _sandbox_argv(command):
     """Return (argv, use_shell) to execute `command` under the active sandbox."""
     cwd = os.getcwd()
+    # sudo requires setuid escalation; bwrap always sets no_new_privs which
+    # permanently blocks setuid inside the sandbox. Run sudo commands unsandboxed
+    # (they still go through the normal approval gate before reaching here).
+    stripped = command.lstrip()
+    if stripped.startswith("sudo ") or stripped == "sudo":
+        return command, True
     if SANDBOX_KIND == "bwrap":
         # Order matters (later mounts win): make everything read-only, give a
         # private /tmp, then bind the working dir writable LAST so it stays
@@ -812,7 +818,7 @@ def _sandbox_wrap_argv(argv):
 DENY_DEFAULTS = [
     "*rm -rf /*", "*rm -fr /*", "* rm -rf ~*", "*mkfs*", "*dd *of=/dev/*",
     "*:(){*", "*shutdown*", "*reboot*", "*>* /dev/sd*", "*chmod -R 777 /*",
-    "*sudo *", "*curl*|*sh*", "*wget*|*sh*",
+    "*curl*|*sh*", "*wget*|*sh*",
 ]
 
 
