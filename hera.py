@@ -153,7 +153,7 @@ def save_config(updates):
         pass
 
 
-VERSION = "0.8.41"   # bump on every released change; mirrored in cli/VERSION
+VERSION = "0.8.42"   # bump on every released change; mirrored in cli/VERSION
 NAME    = _env("HERA_NAME", default="Hera")
 # No server host is baked into the source (so this repo can be public, revealing
 # neither key nor host). Each user supplies the endpoint + key once — via env
@@ -712,12 +712,29 @@ def _probe_bwrap():
         return False
 
 
+def _probe_unshare():
+    """Return True only if unshare --user actually works on this kernel.
+    Restricted containers/VMs disable user namespaces so the binary exists but
+    fails with 'write failed /proc/self/uid_map: Operation not permitted'."""
+    if not (sys.platform.startswith("linux") and shutil.which("unshare")):
+        return False
+    try:
+        r = subprocess.run(
+            ["unshare", "--user", "--map-root-user", "--fork", "--pid",
+             "--mount-proc", "--", "true"],
+            timeout=5, capture_output=True,
+        )
+        return r.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def _detect_sandbox():
     """Pick the best available run_bash sandbox: bwrap > unshare > none."""
     if SANDBOX_MODE == "none":
         return "none"
     have_bwrap = _probe_bwrap()
-    have_unshare = sys.platform.startswith("linux") and bool(shutil.which("unshare"))
+    have_unshare = _probe_unshare()
     if SANDBOX_MODE == "bwrap":
         return "bwrap" if have_bwrap else "none"
     if SANDBOX_MODE == "unshare":
@@ -998,8 +1015,8 @@ def render_md_line(line, state):
             state["code"] = not state["code"]
             lang = stripped.lstrip()[3:].strip()
             if state["code"]:
-                return f"  {GREY}┌─ {lang or 'code'} {SYM_HLINE * max(0, 40 - len(lang))}{R}"
-            return f"  {GREY}└{SYM_HLINE * 46}{R}"
+                return f"  {GREY}{SYM_TL}{SYM_HLINE} {lang or 'code'} {SYM_HLINE * max(0, 40 - len(lang))}{R}"
+            return f"  {GREY}{SYM_BL}{SYM_HLINE * 46}{R}"
         if state["code"]:
             return f"  {GREY}{SYM_VLINE}{R} {line}"
         if re.match(r"^#{1,6}\s", stripped):
