@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Hera SYM_EMDASH an agentic coding CLI for the Qwen3.6-35B-A3B model.
+Hera — an agentic coding CLI for the Qwen3.6-35B-A3B model.
 
-Hera runs the model in a reasonSYM_ARROW_Ract loop with real tools: it can list
+Hera runs the model in a reason→act loop with real tools: it can list
 directories, find files, search code, read/write/edit files, and run shell
 commands in the directory you launch it from. It asks for approval before
 editing files or running commands, streams the model's reasoning, and tracks
 token usage.
 
-Required:       HERA_API_URL  (the endpoint, e.g. http://<host>:8080/v1 SYM_EMDASH no host is
+Required:       HERA_API_URL  (the endpoint, e.g. http://<host>:8080/v1 — no host is
                               baked in, so this file can live in a public repo)
                 HERA_API_KEY  (bearer key the server enforces)
 Optional:       HERA_MODEL          (default qwen3.6-35b-a3b)
@@ -20,7 +20,7 @@ Optional:       HERA_MODEL          (default qwen3.6-35b-a3b)
                 HERA_NO_VERIFY=1    don't auto-run/verify code after editing it
                 HERA_PLAN=1         start in plan mode (investigate & propose,
                                     no edits until you /plan to approve)
-                HERA_PRICE_IN / HERA_PRICE_OUT   USD per 1M tokens SYM_ARROW_R show $ cost
+                HERA_PRICE_IN / HERA_PRICE_OUT   USD per 1M tokens → show $ cost
                 HERA_CONTEXT_TOKENS / HERA_AUTO_COMPACT_AT   auto-compact history
                                     when it nears the context window (default 32000, 0.8)
                 HERA_VISION_URL     vision endpoint for image attachments (the
@@ -29,7 +29,7 @@ Optional:       HERA_MODEL          (default qwen3.6-35b-a3b)
                 HERA_VISION_MODEL   model name at HERA_VISION_URL
 
 Config file (~/.config/hera/config.json) also supports:
-    "hooks":       {"PreToolUse":[{"matcher":"run_bash","command":"SYM_ELLIPSIS"}], "PostToolUse":[SYM_ELLIPSIS], "Stop":[SYM_ELLIPSIS]}
+    "hooks":       {"PreToolUse":[{"matcher":"run_bash","command":"…"}], "PostToolUse":[…], "Stop":[…]}
     "permissions": {"allow":["run_bash(git *)"], "ask":["write_file"], "deny":["run_bash(rm *)"]}
     "price_in"/"price_out", "context_tokens", "auto_compact_at"
 Custom slash commands live in ~/.config/hera/commands/*.md ($ARGUMENTS),
@@ -71,7 +71,7 @@ except ImportError:
 try:
     import termios
     import tty
-except ImportError:  # non-POSIX (e.g. Windows) SYM_EMDASH raw mode unavailable
+except ImportError:  # non-POSIX (e.g. Windows) — raw mode unavailable
     termios = None
     tty = None
 
@@ -118,7 +118,7 @@ _FILE_CFG = _load_config_file()
 
 
 def _cfg(*env_names, key=None, default=""):
-    """Env var (first non-empty) SYM_ARROW_R config file[key] SYM_ARROW_R default."""
+    """Env var (first non-empty) → config file[key] → default."""
     v = _env(*env_names)
     if v:
         return v
@@ -128,7 +128,7 @@ def _cfg(*env_names, key=None, default=""):
 
 
 def _cfg_truthy(*env_names, key=None, default=False):
-    """Env var SYM_ARROW_R config file value SYM_ARROW_R boolean default."""
+    """Env var → config file value → boolean default."""
     v = _env(*env_names)
     if v != "":
         return _truthy(v)
@@ -205,7 +205,7 @@ STATUSLINE_CMD = _cfg("HERA_STATUSLINE", key="statusline", default="")
 
 MAX_TOOL_OUTPUT = int(_env("HERA_MAX_TOOL_OUTPUT", default="0"))  # 0 = unlimited
 MAX_READ_BYTES  = 256_000  # cap read_file size
-MAX_IMAGE_BYTES = 10_000_000  # cap an attached image before base64 (SYM_APPROX13MB encoded)
+MAX_IMAGE_BYTES = 10_000_000  # cap an attached image before base64 (≈13MB encoded)
 
 # Web access: the model can search/fetch the live web when it lacks info.
 WEB_ENABLED = not _truthy(_env("HERA_NO_WEB"))      # on by default; HERA_NO_WEB=1 disables
@@ -268,7 +268,7 @@ def _load_keybindings():
     for key_str, cmd in raw.items():
         k = key_str.lower().strip()
         if k.startswith("ctrl+") and len(k) == 6 and k[5].isalpha():
-            byte = ord(k[5]) - ord('a') + 1  # ctrl+a=0x01 SYM_ELLIPSIS ctrl+z=0x1a
+            byte = ord(k[5]) - ord('a') + 1  # ctrl+a=0x01 … ctrl+z=0x1a
             ctrl_map[byte] = cmd
         elif k.startswith("alt+") and len(k) == 5 and k[4].isalpha():
             alt_map[k[4]] = cmd
@@ -358,7 +358,7 @@ def _emit_telemetry(event, **attrs):
         try:
             requests.post(f"{OTEL_ENDPOINT}/v1/logs", json=_otlp_log(event, rec),
                           timeout=3)
-        except Exception:  # noqa: BLE001 SYM_EMDASH telemetry must never break a turn
+        except Exception:  # noqa: BLE001 — telemetry must never break a turn
             pass
 
 
@@ -450,7 +450,7 @@ _VERIFY_NUDGE = (
     "[auto-verify] You changed code but haven't run it. Verify the change actually works now: "
     "run the project's tests/build/linter if present, or otherwise execute the affected file or "
     "function (e.g. `pytest`, `npm test`, `python <file>`, `node <file>`, `go build ./...`). "
-    "If it fails, read the error, fix the root cause, and re-run SYM_EMDASH repeat until it passes or you're "
+    "If it fails, read the error, fix the root cause, and re-run — repeat until it passes or you're "
     "genuinely blocked (then say what's blocking). Use run_bash; the user approves commands.")
 
 
@@ -530,7 +530,7 @@ def _detect_project_commands(cwd=None):
 def _project_hint():
     cmds = _detect_project_commands()
     return (" This project's toolchain looks like: " + ", ".join(f"`{c}`" for c in cmds)
-            + " SYM_EMDASH prefer those to verify.") if cmds else ""
+            + " — prefer those to verify.") if cmds else ""
 
 
 def _git_context():
@@ -598,7 +598,7 @@ def _wants_code_change(text):
 
 _EDIT_NUDGE = (
     "[auto-apply] Your turn ended without any file change, but the request asked for one. "
-    "If you proposed or described a fix, you must actually apply it SYM_EMDASH call edit_file (exact "
+    "If you proposed or described a fix, you must actually apply it — call edit_file (exact "
     "old_string/new_string) or write_file now. Describing a patch in prose changes nothing on "
     "disk. If the task genuinely needs no edit, say so in one line and stop.")
 
@@ -672,7 +672,7 @@ def _downconvert_images(messages):
             if p.get("type") == "text":
                 texts.append(p.get("text", ""))
             elif p.get("type") == "image_url":
-                texts.append("[image attached SYM_EMDASH not interpreted by this text-only model]")
+                texts.append("[image attached — not interpreted by this text-only model]")
         nm = dict(m)
         nm["content"] = "\n".join(t for t in texts if t).strip() or "[image attached]"
         out.append(nm)
@@ -794,7 +794,7 @@ def sandbox_label():
         return f"bwrap {SYM_EMDASH} fs confined to cwd{extra}, {net}"
     if SANDBOX_KIND == "unshare":
         return f"unshare {SYM_EMDASH} pid-isolated, {net} (install bubblewrap for fs confinement)"
-    return "none SYM_EMDASH run_bash runs unconfined"
+    return "none — run_bash runs unconfined"
 
 
 def _sandbox_argv(command):
@@ -823,7 +823,7 @@ def _sandbox_argv(command):
             argv += ["--net"]
         argv += ["--", "/bin/sh", "-c", command]
         return argv, False
-    return command, True  # none SYM_ARROW_R shell string
+    return command, True  # none → shell string
 
 
 def _sandbox_wrap_argv(argv):
@@ -1031,7 +1031,7 @@ def render_md_line(line, state):
         if stripped.startswith(">"):
             return f"  {GREY}{SYM_THIN}{R} {DIM}{stripped[1:].strip()}{R}"
         return _md_inline(line)
-    except Exception:  # noqa: BLE001 SYM_EMDASH never let rendering break the stream
+    except Exception:  # noqa: BLE001 — never let rendering break the stream
         return line
 
 
@@ -1071,7 +1071,7 @@ class Spinner:
                 word = random.choice(_WHIMSY)
                 last_rot = now
             f = self._FRAMES[i % len(self._FRAMES)]
-            tail = "SYM_ELLIPSIS" if whimsy else ""
+            tail = "…" if whimsy else ""
             print(f"\r  {CYAN}{f}{R}  {DIM}{word}{tail} {secs:.1f}s{R}   ", end="", flush=True)
             i += 1
             time.sleep(0.1)
@@ -1121,7 +1121,7 @@ def tool_read_file(path, offset=None, limit=None):
     if low.endswith(".pdf"):
         text = _read_pdf(p)
         if text is None:
-            return ("[error] couldn't extract PDF text SYM_EMDASH install poppler "
+            return ("[error] couldn't extract PDF text — install poppler "
                     "(`pdftotext`) or the `pypdf` package, then retry.")
         return text[:MAX_READ_BYTES]
     if os.path.getsize(p) > MAX_READ_BYTES:
@@ -1187,7 +1187,7 @@ def tool_search(pattern, path=".", glob="*", ignore_case=False, max_results=200)
                             results.append(f"{SYM_ELLIPSIS}[stopped at {max_results} matches]")
                             return "\n".join(results)
         except (UnicodeDecodeError, OSError):
-            continue  # binary or unreadable SYM_EMDASH skip
+            continue  # binary or unreadable — skip
     if not results:
         return f"(no matches for /{pattern}/ under {base})"
     return "\n".join(results)
@@ -1306,7 +1306,7 @@ def tool_semantic_search(query, path=".", k=8):
         qvec = _embed([query[:1200]])[0]
         vecs = []
         texts = [c[2] for c in chunks]
-        for j in range(0, len(texts), 32):  # small batches SYM_ARROW_R stay under embed ctx
+        for j in range(0, len(texts), 32):  # small batches → stay under embed ctx
             vecs.extend(_embed(texts[j:j + 32]))
     except Exception as exc:  # noqa: BLE001
         return f"[error] embeddings request failed: {exc}"
@@ -1398,7 +1398,7 @@ def _read_pdf(p):
         try:
             reader = m.PdfReader(p)
             return "\n".join((pg.extract_text() or "") for pg in reader.pages)
-        except Exception:  # noqa: BLE001 SYM_EMDASH try the next backend
+        except Exception:  # noqa: BLE001 — try the next backend
             continue
     return None
 
@@ -1522,7 +1522,7 @@ def _do_install(program):
     detail = (proc.stderr or proc.stdout or "").strip().splitlines()
     hint = detail[-1] if detail else f"exit {proc.returncode}"
     if "password" in (proc.stderr or "").lower():
-        hint = "needs sudo (no password available here) SYM_EMDASH install it manually"
+        hint = "needs sudo (no password available here) — install it manually"
     return False, f"install failed: {hint}"
 
 
@@ -1622,7 +1622,7 @@ def _html_text(s):
 
 
 def _ddg_url(href):
-    """DuckDuckGo wraps result links in a redirect SYM_EMDASH unwrap to the real URL."""
+    """DuckDuckGo wraps result links in a redirect — unwrap to the real URL."""
     if href.startswith("//"):
         href = "https:" + href
     parsed = _urlparse.urlparse(href)
@@ -1879,7 +1879,7 @@ def _diff_preview(old, new):
 def _full_diff(old, new, max_lines=120):
     """A colored unified diff of the *whole* proposed change (capped).
 
-    Shown before an edit is applied so the user sees exactly what will change SYM_EMDASH
+    Shown before an edit is applied so the user sees exactly what will change —
     Claude-Code-style. `old`/`new` are the full before/after file contents.
     """
     a = old.splitlines()
@@ -2002,7 +2002,7 @@ def _type_feedback():
     """Prompt for a freeform instruction at an approval gate.
 
     The returned text becomes the tool's denial reason, so it is fed straight
-    back to the model SYM_EMDASH Claude-Code's "No, and tell it what to do instead".
+    back to the model — Claude-Code's "No, and tell it what to do instead".
     """
     try:
         fb = input(f"{BOLD}  tell Hera what to do instead: {R}").strip()
@@ -2015,7 +2015,7 @@ def approve(name, args):
     """Return True to run the tool, or a string denial reason."""
     # Plan mode: block anything that changes state until the user approves.
     if PLAN_MODE and name in SIDE_EFFECTS:
-        return ("plan mode is on SYM_EMDASH investigate read-only, then call exit_plan_mode with your "
+        return ("plan mode is on — investigate read-only, then call exit_plan_mode with your "
                 "plan for the user to approve. Modifying tools stay disabled until then.")
 
     # Fine-grained permission rules (from config) take precedence over YOLO/allowlist.
@@ -2104,7 +2104,7 @@ def interruptible():
 
     A daemon thread puts stdin in cbreak mode and polls for the ESC byte
     (0x1b). stream_turn() checks _INTERRUPT each chunk and stops the turn.
-    No-ops off a real TTY (e.g. piped input, Windows). Ctrl-C is unaffected SYM_EMDASH
+    No-ops off a real TTY (e.g. piped input, Windows). Ctrl-C is unaffected —
     it still raises KeyboardInterrupt through the normal path.
     """
     _INTERRUPT.clear()
@@ -2130,7 +2130,7 @@ def interruptible():
                 if b == b"\x1b":          # ESC
                     _INTERRUPT.set()
                     return
-        except Exception:                 # noqa: BLE001 SYM_EMDASH never crash the turn
+        except Exception:                 # noqa: BLE001 — never crash the turn
             pass
 
     t = threading.Thread(target=watch, daemon=True)
@@ -2202,7 +2202,7 @@ def _extract_text_tool_calls(content):
     structured `tool_calls`.
 
     Some OpenAI-compatible servers (notably llama.cpp without the right tool
-    template) let a model's tool call fall through as plain content SYM_EMDASH e.g. a
+    template) let a model's tool call fall through as plain content — e.g. a
     Hermes/Qwen `<tool_call>{SYM_ELLIPSIS}</tool_call>` block or a fenced JSON object. We
     parse those back out so the agent still acts on them instead of treating the
     turn as a final answer. Only objects naming a *registered* tool are accepted,
@@ -2256,10 +2256,10 @@ def _anthropic_tools(schemas):
 
 
 def _to_anthropic_messages(messages):
-    """Translate OpenAI-style history SYM_ARROW_R (system_str, anthropic_messages).
+    """Translate OpenAI-style history → (system_str, anthropic_messages).
 
-    assistant tool_calls SYM_ARROW_R tool_use blocks; role:tool SYM_ARROW_R user tool_result blocks;
-    multimodal image_url parts SYM_ARROW_R Anthropic image blocks. Consecutive same-role
+    assistant tool_calls → tool_use blocks; role:tool → user tool_result blocks;
+    multimodal image_url parts → Anthropic image blocks. Consecutive same-role
     messages are merged so roles alternate as the API expects."""
     system_parts, out = [], []
     for m in messages:
@@ -2321,7 +2321,7 @@ def _to_anthropic_messages(messages):
 
 
 def _parse_anthropic_response(data):
-    """Convert an Anthropic Messages response dict SYM_ARROW_R internal turn shape."""
+    """Convert an Anthropic Messages response dict → internal turn shape."""
     parts, tool_calls = [], []
     for block in data.get("content", []) or []:
         bt = block.get("type")
@@ -2443,7 +2443,7 @@ def stream_turn(messages, spinner, tools=None, model_override=None):
                 spinner.start()
                 continue  # doesn't count as a failed attempt
             if code and code < 500:
-                spinner.stop()  # other 4xx (401/403) won't fix itself SYM_EMDASH don't retry
+                spinner.stop()  # other 4xx (401/403) won't fix itself — don't retry
                 print(f"{RED}[error] {exc}{R}\n", file=sys.stderr)
                 return None
         except requests.exceptions.ConnectionError as exc:
@@ -2724,11 +2724,11 @@ def context_report(messages):
 
 # ── Agent loop ────────────────────────────────────────────────────────────────
 def run_agent(messages, spinner):
-    """Drive the reasonSYM_ARROW_Ract loop until the model produces a final answer."""
+    """Drive the reason→act loop until the model produces a final answer."""
     turn_tokens = 0
     did_work = False       # did this turn actually use tools? (gates next-step tips)
     edited_code = False    # wrote/edited a code file
-    ran_command = False    # ran a shell command (SYM_APPROX self-verified)
+    ran_command = False    # ran a shell command (≈ self-verified)
     verified = False       # already injected the auto-verify nudge for this task
     edit_attempted = False # the model emitted at least one edit/write call
     edit_nudged = False    # already injected the apply-your-edit nudge for this task
@@ -2877,7 +2877,7 @@ def _generate_suggestions(messages):
         "transcript below, propose 2-3 concrete, genuinely useful next steps the user could "
         "take now (e.g. run the tests, review the diff, commit, try an edge case). Each must be "
         "a short imperative phrase of at most 9 words, specific to what was just done. Reply "
-        "with ONLY a JSON array of strings SYM_EMDASH no prose, no numbering.\n\n" + "\n".join(recent)
+        "with ONLY a JSON array of strings — no prose, no numbering.\n\n" + "\n".join(recent)
     )
     try:
         resp = requests.post(
@@ -2893,13 +2893,13 @@ def _generate_suggestions(messages):
         )
         resp.raise_for_status()
         raw = resp.json()["choices"][0]["message"].get("content") or ""
-    except Exception:  # noqa: BLE001 SYM_EMDASH suggestions are a nicety, never fatal
+    except Exception:  # noqa: BLE001 — suggestions are a nicety, never fatal
         return []
     return _parse_suggestions(raw)[:3]
 
 
 def _suggest_next_steps(messages):
-    """Interactive (TTY) end-of-task next-step tips SYM_EMDASH like Claude Code's. Quiet:
+    """Interactive (TTY) end-of-task next-step tips — like Claude Code's. Quiet:
     TTY only; the disable/error handling lives in _generate_suggestions."""
     if not sys.stdout.isatty():
         return
@@ -2924,7 +2924,7 @@ def _normalize_tool_args(raw):
     write_file call with no body). Storing that raw string poisons the
     conversation: llama.cpp's chat template can't re-render it, so *every*
     later request 500s and the session is wedged forever. Coerce to valid
-    JSON SYM_EMDASH keep it if it parses to an object, otherwise drop to `{}`.
+    JSON — keep it if it parses to an object, otherwise drop to `{}`.
     """
     try:
         parsed = json.loads(raw or "{}")
@@ -2939,7 +2939,7 @@ def _sanitize_history(messages):
     """Heal a (possibly already-poisoned) message list in place.
 
     Normalizes every assistant tool_call's arguments so a session saved before
-    this fix SYM_EMDASH or resumed from disk SYM_EMDASH can't keep 500-ing on load.
+    this fix — or resumed from disk — can't keep 500-ing on load.
     """
     for m in messages:
         for tc in (m.get("tool_calls") or []):
@@ -2991,7 +2991,7 @@ def _exec_call(c, indent=""):
     except TypeError as exc:
         msg = str(exc).replace(f"tool_{name}()", f"{name}()")
         output = f"[error] bad arguments: {msg}"
-    except Exception as exc:  # noqa: BLE001 SYM_EMDASH surface to the model
+    except Exception as exc:  # noqa: BLE001 — surface to the model
         output = f"[error] {type(exc).__name__}: {exc}"
     finally:
         if tspin:
@@ -3035,7 +3035,7 @@ def run_subagent(description, agent=None, model=None, quiet=False):
     different `model:` (overridable per call via the task tool's `model` arg).
 
     `quiet=True` runs it on the calling worker thread without live output (used
-    by parallel delegation) SYM_EMDASH its result is still returned to the parent.
+    by parallel delegation) — its result is still returned to the parent.
     """
     if quiet:
         _QUIET.on = True
@@ -3160,8 +3160,8 @@ if WEB_ENABLED:
         "name": "web_search",
         "description": ("Search the live web and return ranked results (title, URL, "
                         "snippet). Use this automatically whenever you lack the "
-                        "information to answer SYM_EMDASH e.g. current events, library/API "
-                        "docs, versions, error messages SYM_EMDASH instead of guessing."),
+                        "information to answer — e.g. current events, library/API "
+                        "docs, versions, error messages — instead of guessing."),
         "parameters": {"type": "object", "properties": {
             "query":       {"type": "string", "description": "Search query"},
             "max_results": {"type": "integer", "description": "How many results (default 6)"},
@@ -3290,7 +3290,7 @@ def _confirm_plan(plan):
         return "auto", ""
     if ans in ("3", "n", "no"):
         return "no", ""
-    return "no", ans  # any other text SYM_ARROW_R keep planning, with that as feedback
+    return "no", ans  # any other text → keep planning, with that as feedback
 
 
 def tool_exit_plan_mode(plan="", **_ignored):
@@ -3298,10 +3298,10 @@ def tool_exit_plan_mode(plan="", **_ignored):
     approval, leave plan mode so the implementation can begin."""
     global PLAN_MODE, AUTO_MODE
     if not PLAN_MODE:
-        return "Not in plan mode SYM_EMDASH go ahead and implement directly."
+        return "Not in plan mode — go ahead and implement directly."
     decision, feedback = _confirm_plan(plan or "(no plan text provided)")
     if decision == "no":
-        msg = ("The user is NOT ready SYM_EMDASH keep planning and do not make any changes yet.")
+        msg = ("The user is NOT ready — keep planning and do not make any changes yet.")
         if feedback:
             msg += f" Their feedback: {feedback}"
         return msg + " Revise the plan and call exit_plan_mode again when ready."
@@ -3309,9 +3309,9 @@ def tool_exit_plan_mode(plan="", **_ignored):
     if decision == "auto":
         AUTO_MODE = "edit"
         _save_auto_mode("edit")
-        return ("Plan APPROVED and the user chose to auto-accept edits. Plan mode is OFF SYM_EMDASH "
+        return ("Plan APPROVED and the user chose to auto-accept edits. Plan mode is OFF — "
                 "implement the plan now; file edits run without individual prompts.")
-    return ("Plan APPROVED by the user. Plan mode is OFF SYM_EMDASH implement the plan now with your "
+    return ("Plan APPROVED by the user. Plan mode is OFF — implement the plan now with your "
             "tools (edits/commands will prompt for approval as usual).")
 
 
@@ -3436,7 +3436,7 @@ def _run_hooks(event, name=None, args=None, output=None, prompt=None):
         try:
             r = subprocess.run(spec["command"], shell=True, input=payload, text=True,
                                capture_output=True, timeout=30, env=env, cwd=os.getcwd())
-        except Exception:  # noqa: BLE001 SYM_EMDASH a broken hook must not break the agent
+        except Exception:  # noqa: BLE001 — a broken hook must not break the agent
             continue
         if event in _BLOCKING_HOOKS and r.returncode != 0:
             reason = (r.stdout or r.stderr or "").strip() or f"blocked by {event} hook"
@@ -3588,7 +3588,7 @@ def install_plugin(name, source=None):
         return f"[error] already installed: {dest}"
     os.makedirs(PLUGINS_DIR, exist_ok=True)
     src = os.path.expanduser(source)
-    if os.path.isdir(src):                      # local path SYM_ARROW_R copy
+    if os.path.isdir(src):                      # local path → copy
         try:
             shutil.copytree(src, dest)
         except OSError as exc:
@@ -3708,7 +3708,7 @@ def print_shared_skills(skill_id=""):
 def resolve_identity(force=False):
     """Make the API key *be* the identity: ask the proxy who this key belongs to
     and cache the account email, so sessions are labelled by the real user with
-    no HERA_USER to set. Idempotent and fail-silent SYM_EMDASH falls back to the key hash
+    no HERA_USER to set. Idempotent and fail-silent — falls back to the key hash
     if the proxy is old or unreachable. Returns the known/resolved email.
 
     Pass force=True (e.g. `hera whoami`) to bypass the cache and always query
@@ -3846,7 +3846,7 @@ def _first_user(messages):
             continue
         text = " ".join(_text_of(m.get("content")).split())
         if text.startswith("[Summary of earlier conversation]"):
-            continue  # a compacted session SYM_EMDASH keep looking for the real question
+            continue  # a compacted session — keep looking for the real question
         if text:
             return text[:64]
     return "(empty)"
@@ -3859,7 +3859,7 @@ def _session_label(s):
 
 
 def print_sessions(project_only=False):
-    """List saved conversations. project_only SYM_ARROW_R just this project's (for the
+    """List saved conversations. project_only → just this project's (for the
     interactive `/sessions`); otherwise all of them (for `hera --list-sessions`)."""
     alls = list_sessions()
     sessions = [s for s in alls if _same_project(s)] if project_only else alls
@@ -4042,7 +4042,7 @@ def _expand_env_vars(s):
 def _mcp_headers(spec):
     """Build request headers for an HTTP MCP server, including bearer auth.
 
-    `token`/`auth_token` becomes `Authorization: Bearer SYM_ELLIPSIS` SYM_EMDASH this is the
+    `token`/`auth_token` becomes `Authorization: Bearer …` — this is the
     credential an OAuth flow ultimately yields (a personal access / API token).
     `headers` lets you set anything else. Both support ${ENV} expansion.
     """
@@ -4054,7 +4054,7 @@ def _mcp_headers(spec):
 
 
 class McpHttpClient:
-    """MCP client over Streamable HTTP SYM_EMDASH JSON-RPC POSTed to one endpoint, with
+    """MCP client over Streamable HTTP — JSON-RPC POSTed to one endpoint, with
     either an application/json reply or a text/event-stream (SSE) reply. Works
     with remote MCP servers that authenticate via a bearer/OAuth token."""
 
@@ -4227,7 +4227,7 @@ def _discover_oauth_endpoints(server_url):
                 return {"authorization_endpoint": d["authorization_endpoint"],
                         "token_endpoint": d["token_endpoint"],
                         "scopes_supported": d.get("scopes_supported", [])}
-        except Exception:  # noqa: BLE001 SYM_EMDASH try the next well-known path
+        except Exception:  # noqa: BLE001 — try the next well-known path
             continue
     return {}
 
@@ -4279,7 +4279,7 @@ def mcp_oauth_login(name):
     if not (eps["authorization_endpoint"] and eps["token_endpoint"]):
         eps = _discover_oauth_endpoints(spec["url"]) or eps
     if not (eps.get("authorization_endpoint") and eps.get("token_endpoint")):
-        return ("[error] couldn't find OAuth endpoints SYM_EMDASH set oauth.authorization_endpoint "
+        return ("[error] couldn't find OAuth endpoints — set oauth.authorization_endpoint "
                 "and oauth.token_endpoint in mcp.json")
     client_id = oauth.get("client_id") or "hera"
     scope = oauth.get("scope") or " ".join(eps.get("scopes_supported") or [])
@@ -4359,7 +4359,7 @@ def register_semantic_search():
         "name": "semantic_search",
         "description": ("Rank code chunks by embedding similarity to a natural-language "
                         "query (returns path:line: (score) snippet). Use for fuzzy "
-                        "'where is the logic that SYM_ELLIPSIS' questions."),
+                        "'where is the logic that …' questions."),
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string", "description": "Natural-language query"},
             "path":  {"type": "string", "description": "Directory to search (default '.')"},
@@ -4400,7 +4400,7 @@ MEMORY_MAX_TOTAL    = 32000   # overall cap across all memory sources
 
 def _memory_sources():
     """Ordered (scope, path) memory files, least- to most-specific:
-    enterprise SYM_ARROW_R user (~/.config/hera) SYM_ARROW_R project tree (filesystem root down to
+    enterprise → user (~/.config/hera) → project tree (filesystem root down to
     cwd). Mirrors Claude Code's CLAUDE.md hierarchy."""
     out = []
     ent = _env("HERA_ENTERPRISE_MEMORY") or "/etc/hera/HERA.md"
@@ -4654,7 +4654,7 @@ def _run_doctor():
                 print(f"    {warn_s} update available: {latest}")
                 ans = input(f"    {CYAN}Update now? [y/N]{R} ").strip().lower()
                 if ans == "y":
-                    print("    downloadingSYM_ELLIPSIS", end="", flush=True)
+                    print("    downloading…", end="", flush=True)
                     ok, err = _self_update(cli_base)
                     print(f"\r    {fix_s if ok else fail_s} "
                           f"{'updated {SYM_EMDASH} restart hera to apply' if ok else f'failed: {err}'}")
@@ -4766,7 +4766,7 @@ def _think_payload():
         return {"chat_template_kwargs": {"enable_thinking": False}}
     if level in ("hard", "max"):
         return {"chat_template_kwargs": {"enable_thinking": True}}
-    return {}  # 'normal' SYM_ARROW_R leave the server default
+    return {}  # 'normal' → leave the server default
 
 
 def _output_style_text():
@@ -4798,24 +4798,24 @@ def system_prompt():
         "You have tools to list directories, find files by glob, search file contents by "
         "regex, index code definitions (symbols), read files, write files, edit files by "
         "exact string replacement, and run shell commands. A semantic_search tool may also "
-        "be available for fuzzy 'where is the code thatSYM_ELLIPSIS' questions. "
+        "be available for fuzzy 'where is the code that…' questions. "
         "Use glob/search/symbols to locate relevant code, then read files before changing "
         "anything; make edits with precise old_string/new_string. File edits are revertible "
         "by the user with /undo. For larger self-contained subtasks you may delegate to a "
         "focused sub-agent with the task tool. "
-        "Keep prose short SYM_EMDASH act with tools rather than describing what you would do. "
+        "Keep prose short — act with tools rather than describing what you would do. "
         "When the task is complete, give a brief summary of what you changed."
         "\n\n"
-        "PRECISION RULES SYM_EMDASH follow these without exception:\n"
+        "PRECISION RULES — follow these without exception:\n"
         "1. NEVER state a fact about a file, config, command, or service without first reading "
         "the actual source. Read docker-compose.yml, config files, and code before claiming "
-        "what they contain. Guessing is forbidden SYM_EMDASH if you don't know, use a tool to find out.\n"
+        "what they contain. Guessing is forbidden — if you don't know, use a tool to find out.\n"
         "2. ALWAYS give concrete, copy-pasteable solutions: exact shell commands with real flags, "
         "exact file paths, exact config keys and values. Never say 'something like' or "
-        "'you might want to' SYM_EMDASH give the exact thing the user must run or change.\n"
+        "'you might want to' — give the exact thing the user must run or change.\n"
         "3. COVER ALL AFFECTED SERVICES: when a task involves the running stack, read "
         "docker-compose.yml first and identify every service that is relevant to the problem "
-        "(upstreams, downstreams, shared volumes, env vars). Address ALL of them SYM_EMDASH do not fix "
+        "(upstreams, downstreams, shared volumes, env vars). Address ALL of them — do not fix "
         "one service and silently leave a dependent service broken.\n"
         "4. VERIFY LIVE STATE BEFORE ANSWERING: for questions about what is running, broken, "
         "or configured, check the actual live state (docker ps, docker logs, curl health "
@@ -4828,35 +4828,35 @@ def system_prompt():
         "Never spiral through multiple variations of the same failing strategy."
     )
     base += (" For any task with more than ~3 steps, call todo_write first to lay out the plan as "
-             "a checklist, then update it as you go SYM_EMDASH mark each step completed and set the next one "
+             "a checklist, then update it as you go — mark each step completed and set the next one "
              "in_progress, keeping exactly one in_progress at a time. Skip it for trivial requests.")
     if EXTRA_DIRS:
         base += (" You may also read and write files in these additional trusted directories: "
                  + ", ".join(EXTRA_DIRS) + ".")
     if AUTO_VERIFY and not PLAN_MODE:
         base += (" ALWAYS VERIFY YOUR WORK: after writing or modifying code, actually run it before "
-                 "saying you're done SYM_EMDASH run the project's tests/build/linter if present, or otherwise "
+                 "saying you're done — run the project's tests/build/linter if present, or otherwise "
                  "execute the affected file or function (pytest, npm test/build, python <file>, "
-                 "node <file>, go build ./SYM_ELLIPSIS, etc.). If verification fails, read the error, fix the "
+                 "node <file>, go build ./…, etc.). If verification fails, read the error, fix the "
                  "root cause, and re-run ONCE. If it still fails after one fix attempt, STOP "
-                 "SYM_EMDASH report the exact error and what needs to be resolved, do not keep looping. "
+                 "— report the exact error and what needs to be resolved, do not keep looping. "
                  "When asked to run a project or codebase, get it actually running and fix what "
                  "breaks. Prefer the smallest relevant check.")
         base += _project_hint()
     if PLAN_MODE:
-        base += (" PLAN MODE IS ON. Investigate with read-only tools only SYM_EMDASH do NOT modify files, "
+        base += (" PLAN MODE IS ON. Investigate with read-only tools only — do NOT modify files, "
                  "run state-changing commands, or install anything yet. When you have a concrete "
                  "plan, call the exit_plan_mode tool with a short numbered plan (markdown) and STOP. "
                  "The user approves there; on approval plan mode turns off and you implement. Use "
-                 "the tool SYM_EMDASH don't just describe the plan in prose.")
+                 "the tool — don't just describe the plan in prose.")
     if WEB_ENABLED:
         base += (" You have live internet access. Whenever the answer depends on information you "
-                 "don't already hold SYM_EMDASH current events, recent releases, library or API docs, exact "
-                 "versions, an unfamiliar error message, anything time-sensitive SYM_EMDASH call web_search "
+                 "don't already hold — current events, recent releases, library or API docs, exact "
+                 "versions, an unfamiliar error message, anything time-sensitive — call web_search "
                  "on your own initiative rather than guessing, then web_fetch the most relevant "
                  "results to read their full text. Corroborate across two or more independent "
                  "sources before you commit to an answer. Then synthesize what you actually read "
-                 "into a clear, direct answer in your own words SYM_EMDASH do not just paste snippets SYM_EMDASH and "
+                 "into a clear, direct answer in your own words — do not just paste snippets — and "
                  "cite the sources inline as [1], [2] with a short 'Sources:' list of the URLs at "
                  "the end. Treat freshly fetched pages as current ground truth over any older "
                  "assumption you have, and say so if sources disagree or you couldn't verify a claim.")
@@ -4864,7 +4864,7 @@ def system_prompt():
         base += (" When the task needs a command-line tool that isn't installed, call "
                  "install_tool with the program name and a short reason; the user approves, "
                  "then it's downloaded and you can use it via run_bash. You may also just run "
-                 "a command SYM_EMDASH if it fails with 'command not found' the user is offered the "
+                 "a command — if it fails with 'command not found' the user is offered the "
                  "install and the command is retried automatically. Either way, don't give up "
                  "because a tool is missing.")
     style = _output_style_text()
@@ -4906,7 +4906,7 @@ def expand_mentions(text, extra_images=None):
     """Resolve any @path the user references.
 
     Text files are inlined as before. Image @paths (and any pre-encoded
-    `extra_images` SYM_EMDASH list of (name, data_url), used by the VS Code attach flow)
+    `extra_images` — list of (name, data_url), used by the VS Code attach flow)
     become OpenAI `image_url` parts. Returns (content, names) where content is a
     plain string when no images are present, or a multimodal parts list when
     they are.
@@ -5015,7 +5015,7 @@ def _short(path, n=40):
     home = os.path.expanduser("~")
     if path.startswith(home):
         path = "~" + path[len(home):]
-    return path if len(path) <= n else "SYM_ELLIPSIS" + path[-(n - 1):]
+    return path if len(path) <= n else "…" + path[-(n - 1):]
 
 
 def print_banner():
@@ -5234,7 +5234,7 @@ def vim_normal_key(buf, pos, key, pending=""):
     # An operator (d/c) is pending — this key is its motion.
     if pending in ("d", "c"):
         to_insert = pending == "c"
-        if key == pending:                       # dd / cc SYM_ARROW_R whole line
+        if key == pending:                       # dd / cc → whole line
             return ("", 0, "insert" if to_insert else "normal", "", None)
         end = {"w": _vim_next_word(buf, pos), "b": _vim_prev_word(buf, pos),
                "e": _vim_word_end(buf, pos), "$": len(buf), "0": 0,
@@ -5479,7 +5479,7 @@ class RawLineReader:
                 if key == "CTRL_W":
                     self._delete_word(); self._refresh(); continue
                 if key == "ESC":
-                    if VIM_MODE:               # ESC SYM_ARROW_R NORMAL mode (vim), keep the line
+                    if VIM_MODE:               # ESC → NORMAL mode (vim), keep the line
                         self.vim_mode = "normal"; self.vim_pending = ""
                         self.pos = max(0, self.pos - 1); self.sel = 0
                         self._refresh(); continue
@@ -5597,7 +5597,7 @@ def _emit(obj):
 def _serve_input_thread():
     while True:
         line = sys.stdin.readline()
-        if not line:                       # stdin closed SYM_ARROW_R tell both consumers
+        if not line:                       # stdin closed → tell both consumers
             _SERVE_CLOSED.set()
             _MAIN_Q.put(None)
             _APPROVAL_Q.put(None)
@@ -5629,7 +5629,7 @@ def _serve_input_thread():
                 _emit({"type": "auto_mode", "mode": want})
         elif t == "logout":
             logout()
-            _emit({"type": "info", "text": "logged out SYM_EMDASH set hera.apiKey to a new key and reload."})
+            _emit({"type": "info", "text": "logged out — set hera.apiKey to a new key and reload."})
             _emit({"type": "logged_out"})
         else:
             _MAIN_Q.put(msg)
@@ -5663,7 +5663,7 @@ def _serve_stream(messages):
     if downgraded and not _VISION_WARNED:
         _VISION_WARNED = True
         _emit({"type": "info", "text": "image attached, but the current model is "
-               "text-only SYM_EMDASH set HERA_VISION_URL to enable vision."})
+               "text-only — set HERA_VISION_URL to enable vision."})
     resp = None
     for compacted in (False, True):
         try:
@@ -5682,7 +5682,7 @@ def _serve_stream(messages):
             # Self-heal a context-overflow 400: summarize and retry once.
             if (code == 400 and _is_context_overflow(exc)
                     and not compacted and len(messages) > 2):
-                _emit({"type": "info", "text": "context window full SYM_EMDASH compacting and retryingSYM_ELLIPSIS"})
+                _emit({"type": "info", "text": "context window full — compacting and retrying…"})
                 compact_history(messages)
                 url, model, send_messages, downgraded = _select_endpoint(messages)
                 continue
@@ -5750,7 +5750,7 @@ def _serve_approve(name, args):
     # Same gating as the interactive approve(): plan mode, config permissions,
     # PreToolUse hooks, then auto mode / YOLO / allowlist — before prompting.
     if PLAN_MODE and name in SIDE_EFFECTS:
-        return ("plan mode is on SYM_EMDASH investigate read-only, then call exit_plan_mode with your "
+        return ("plan mode is on — investigate read-only, then call exit_plan_mode with your "
                 "plan for the user to approve. Modifying tools stay disabled until then.")
     decision = _perm_decision(name, args)
     if decision == "deny":
@@ -5783,7 +5783,7 @@ def _serve_approve(name, args):
             d = msg.get("decision", "n")
             fb = (msg.get("feedback") or "").strip()
             if d not in ("y", "a", "p") and fb:
-                return fb  # typed instruction SYM_ARROW_R fed straight back to the model
+                return fb  # typed instruction → fed straight back to the model
             if d == "a" and name == "run_bash":
                 ALLOW_PATTERNS.append(" ".join(args.get("command", "").split()))
             elif d == "a":
@@ -5794,7 +5794,7 @@ def _serve_approve(name, args):
 
 
 def _serve_install_approver(program, plan):
-    """IDE approval for the reactive run_bash SYM_ARROW_R missing-binary install offer.
+    """IDE approval for the reactive run_bash → missing-binary install offer.
 
     Emits the same approval_request event the editor already renders as buttons,
     then blocks on the editor's decision (read from the JSON stdin stream)."""
@@ -5928,7 +5928,7 @@ def _serve_run(messages):
                     and not edit_nudged and not PLAN_MODE):
                 edit_nudged = True
                 messages.append({"role": "user", "content": _EDIT_NUDGE})
-                _emit({"type": "info", "text": "auto-apply: applying the change you describedSYM_ELLIPSIS"})
+                _emit({"type": "info", "text": "auto-apply: applying the change you described…"})
                 continue
             # Verify-your-work loop (before turn_end, so the panel stays busy
             # through the check): code changed (or the user asked to run the
@@ -5938,7 +5938,7 @@ def _serve_run(messages):
                 verified = True
                 edited_code = False
                 messages.append({"role": "user", "content": _verify_nudge()})
-                _emit({"type": "info", "text": "auto-verify: running it to make sure it worksSYM_ELLIPSIS"})
+                _emit({"type": "info", "text": "auto-verify: running it to make sure it works…"})
                 continue
             _emit({"type": "turn_end", "content": res["content"] or "",
                    "turn_tokens": turn, "session_tokens": dict(SESSION),
@@ -5975,13 +5975,13 @@ def print_main(prompt_text, output_format="text", max_turns=None):
     stream-json (one JSON event per line). Returns a process exit code."""
     global _EMIT_SINK, _NONINTERACTIVE, _PLAN_APPROVER
     if not API_URL:
-        print("[error] no endpoint set SYM_EMDASH export HERA_API_URL / HERA_API_KEY", file=sys.stderr)
+        print("[error] no endpoint set — export HERA_API_URL / HERA_API_KEY", file=sys.stderr)
         return 1
     if not prompt_text and not sys.stdin.isatty():
         prompt_text = sys.stdin.read()
     prompt_text = (prompt_text or "").strip()
     if not prompt_text:
-        print("[error] no prompt SYM_EMDASH pass -p \"...\" or pipe text on stdin", file=sys.stderr)
+        print("[error] no prompt — pass -p \"...\" or pipe text on stdin", file=sys.stderr)
         return 1
 
     resolve_identity()
@@ -6049,7 +6049,7 @@ def print_main(prompt_text, output_format="text", max_turns=None):
 def serve_main():
     global _INSTALL_APPROVER, _PLAN_APPROVER
     if not API_URL:
-        _emit({"type": "error", "message": "no server set SYM_EMDASH set HERA_API_URL"})
+        _emit({"type": "error", "message": "no server set — set HERA_API_URL"})
         return
     resolve_identity()  # label sessions by the key's account email (fail-silent)
     # Reactive missing-binary installs and plan approval ask via the editor.
@@ -6072,7 +6072,7 @@ def serve_main():
         if t == "exit":
             break
         if t == "prompt":
-            _INTERRUPT.clear()  # fresh turn SYM_EMDASH drop any stale interrupt
+            _INTERRUPT.clear()  # fresh turn — drop any stale interrupt
             imgs = [(f"image-{i + 1}", du)
                     for i, du in enumerate(msg.get("images") or [])]
             content, attached = expand_mentions(msg.get("text", ""), extra_images=imgs)
@@ -6120,7 +6120,7 @@ def _update_source():
 
 def check_for_update():
     """Print a one-line notice if a newer version is published. Throttled to
-    once/day and fail-silent SYM_EMDASH never blocks startup or errors out.
+    once/day and fail-silent — never blocks startup or errors out.
 
     A previously-seen newer version is remembered in the config, so the notice
     keeps showing on every launch until the user actually updates.
@@ -6235,7 +6235,7 @@ def _self_update(force=False):
     m = re.search(r'^VERSION\s*=\s*"([^"]+)"', src, re.M)
     remote = m.group(1) if m else None
     if not remote or "def main()" not in src or len(src) < 5000:
-        return False, "the downloaded file doesn't look like hera.py SYM_EMDASH aborted (nothing changed)"
+        return False, "the downloaded file doesn't look like hera.py — aborted (nothing changed)"
     if not force and _parse_ver(remote) <= _parse_ver(VERSION):
         return None, f"already up to date (v{VERSION})"
     try:
@@ -6252,7 +6252,7 @@ def _self_update(force=False):
 
 
 def doctor():
-    """`hera doctor` SYM_EMDASH self-update to the latest version, then check health."""
+    """`hera doctor` — self-update to the latest version, then check health."""
     def line(good, label, val):
         mark = f"{GREEN}{SYM_CHECK}{R}" if good else f"{RED}{SYM_CROSS}{R}"
         print(f"  {mark} {label:<12} {DIM}{val}{R}")
@@ -6263,7 +6263,7 @@ def doctor():
     line(status is not False, "update", msg)
     updated = status is True
 
-    line(bool(API_URL), "endpoint", API_URL or "(unset SYM_EMDASH run `hera` to set it)")
+    line(bool(API_URL), "endpoint", API_URL or "(unset — run `hera` to set it)")
     line(bool(API_KEY), "api key", "set" if API_KEY else "(unset)")
 
     if API_URL and API_KEY:
@@ -6295,9 +6295,9 @@ def main():
     global HIDE_REASONING
 
     ap = argparse.ArgumentParser(prog="hera", add_help=True,
-                                 description="Hera SYM_EMDASH agentic coding CLI")
+                                 description="Hera — agentic coding CLI")
     ap.add_argument("command", nargs="?", default=None,
-                    help="doctor SYM_MIDDOT logout SYM_MIDDOT whoami SYM_MIDDOT mcp-login <server>")
+                    help="doctor · logout · whoami · mcp-login <server>")
     ap.add_argument("extra", nargs="?", default=None, help="argument for `command` (e.g. server name)")
     ap.add_argument("--resume", "-r", nargs="?", const="__latest__", default=None,
                     metavar="ID", help="resume a saved session (latest if no ID)")
@@ -6365,7 +6365,7 @@ def main():
         return
 
     onboard()
-    resolve_identity()  # key SYM_ARROW_R account email, so sessions are labelled by who you are
+    resolve_identity()  # key → account email, so sessions are labelled by who you are
     check_for_update()  # one-line notice if a newer version is published (fail-silent)
     if not API_URL:
         print(f"{RED}[error] no endpoint set. Run `hera` interactively to set it, or:\n"
@@ -6420,7 +6420,7 @@ def main():
 
 
 def _builtin_statusline():
-    """Built-in status line SYM_EMDASH model SYM_MIDDOT git branch SYM_MIDDOT tokens SYM_MIDDOT active modes."""
+    """Built-in status line — model · git branch · tokens · active modes."""
     parts = [f"{BOLD}{MODEL.split('/')[-1]}{R}"]
     try:
         r = subprocess.run("git branch --show-current", shell=True,
@@ -6459,7 +6459,7 @@ def _render_statusline():
         line = (r.stdout or "").strip()
         if line:
             print(f"{DIM}{line}{R}")
-    except Exception:  # noqa: BLE001 SYM_EMDASH a broken statusline must not break the REPL
+    except Exception:  # noqa: BLE001 — a broken statusline must not break the REPL
         pass
 
 
@@ -6823,8 +6823,8 @@ def _repl(messages, spinner):
                 mode = capped
                 globals()["AUTO_MODE"] = mode
                 _save_auto_mode(mode)
-                blurb = {"read": "auto-approve reads only SYM_EMDASH writes/commands will prompt",
-                         "edit": "auto-approve reads + file edits SYM_EMDASH shell commands still prompt",
+                blurb = {"read": "auto-approve reads only — writes/commands will prompt",
+                         "edit": "auto-approve reads + file edits — shell commands still prompt",
                          "all":  "auto-approve ALL tools (deny rules & plan mode still apply)"}[mode]
                 print(f"\n{DIM}auto mode {SYM_ARROW_R} {BOLD}{mode}{R}{DIM} for this project ({_project_key()}).\n"
                       f"  {blurb}.  Stop any time with {R}{CYAN}/auto off{R}{DIM}.{R}\n")
